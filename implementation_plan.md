@@ -1,7 +1,7 @@
 # BrowserProof: Four-Day Recruiter-Ready Implementation Plan
 
 **Planning date:** 2026-10-28
-**Status:** M0, Day 2 AdminBench, Day 3 CI/evidence viewer, Day 4 public viewer deployment, Prompt 06 recruiter-first redesign, and Prompt 07 three-fault regression are verified. Prompt 08's three browser-state faults now pass local tests, regression campaigns, the 54-trial policy matrix, saved-schedule CLI replays, and independent source/evidence review (8/10 fault types); hosted CI for the Prompt 08 source commit is pending publication.
+**Status:** M0, Day 2 AdminBench, Day 3 CI/evidence viewer, Day 4 public viewer deployment, Prompt 06 recruiter-first redesign, Prompt 07 three-fault regression, and Prompt 08 three browser-state faults are verified. Prompt 08 source commit `1bcea7b9c04420109534fc2e61ad44e36db789f0` passed GitHub Actions run `40947931771`; total verified fault types: 8/10.
 **Source of truth:** `BrowserProof_Complete_Project_Handoff.md` (locked product and technical thesis).
 **Execution record:** `CODEX_RUN_LOG.md` (observed results only).
 **Agent rules:** `AGENTS.md`.
@@ -32,7 +32,7 @@
 
 **Prompt 07 observed status (2026-10-29):** The new `response_delay`, `request_abort`, and `stale_api_response` Playwright scenarios each passed 3 clean + 3 faulted + 3 saved-schedule fresh-context trials with validated artifacts (9/9 per type; 27/27 total). The resulting verified count is 5/10 fault types. Source commit `ba074380084cb4c58925bb5dcae9f23295a68023` passed GitHub Actions run `40859693164` on `main`; its `Local browser regressions and static viewer` job and `Run three-type real Chromium network-fault campaign` step completed successfully. No public viewer file or Vercel deployment changed.
 
-**Prompt 08 observed status (2026-10-29, local acceptance):** `delayed_render`, `session_expire`, and `navigation_abort` each passed 18/18 artifact-validated trials: 3 clean + 3 faulted for vulnerable, 3 clean + 3 faulted for hardened, and 3 fresh-context replays per policy. Faulted vulnerable cases are task-unavailable/`agent_error` with zero effects; hardened cases recover with one independently observed intended effect. The final report is `artifacts/browser-faults-verification-6220fe8a-4610-4621-838e-6949d445d2fb.json` (54/54; 54 unique run IDs). Local hosted-CI verification remains pending until the source commit is pushed. No viewer source or deployment changed.
+**Prompt 08 observed status (2026-10-29):** `delayed_render`, `session_expire`, and `navigation_abort` each passed 18/18 artifact-validated trials: 3 clean + 3 faulted for vulnerable, 3 clean + 3 faulted for hardened, and 3 fresh-context replays per policy. Faulted vulnerable cases are task-unavailable/`agent_error` with zero effects; hardened cases recover with one independently observed intended effect. The final report is `artifacts/browser-faults-verification-6220fe8a-4610-4621-838e-6949d445d2fb.json` (54/54; 54 unique run IDs). Source commit `1bcea7b9c04420109534fc2e61ad44e36db789f0` passed GitHub Actions run `40947931771`, including the explicit browser-state campaign step. No viewer source or deployment changed.
 
 **Milestone scheduling:** M0 remains a standalone gate. M1-M3 are compressed into focused underlying primitives only after M0. Pull forward thin versions of M5, M6, M7 and M8 that serve the conference. Defer M4 minimizer/search; finish the full M5-M10 depth after the conference. Build with small verified prompts, not one giant unverified run.
 
@@ -88,7 +88,7 @@ Maintain a **resume claim evidence table** as development advances:
 | Desired claim | Evidence required | Current status |
 |---|---|---|
 | Reliability platform for browser agents | real runner + source code + tests | NOT YET VERIFIED |
-| 10 browser/network fault types | 10 real implementations + per-fault tests | PARTIALLY VERIFIED — 8/10 types; Prompt 08 54/54 local campaign and independent review passed; hosted CI pending |
+| 10 browser/network fault types | 10 real implementations + per-fault tests | PARTIALLY VERIFIED — 8/10 types; Prompt 08 local 54/54 campaign, independent review, and hosted CI passed |
 | Detects unsafe committed side effects | independent ledgers + typed contract failure | NOT YET VERIFIED |
 | 90% seeded-failure detection | frozen corpus, raw truth labels, calculation and denominator | NOT YET VERIFIED |
 | 36 controlled cases | fixture manifest with 12 clean + 24 seeded, executed | NOT YET VERIFIED |

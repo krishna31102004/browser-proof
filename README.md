@@ -111,6 +111,8 @@ The viewer has no runtime backend, credentials, or environment-variable dependen
 
 Day 4 source verification passed in [GitHub Actions run 40833167948](https://github.com/krishna31102004/browser-proof/actions/runs/40833167948) on commit `0c94ba99caf1b04c39702d3fa065bb2cd8862209`.
 
+Prompt 08's three browser-state faults and preserved regressions passed in [GitHub Actions run 40947931771](https://github.com/krishna31102004/browser-proof/actions/runs/40947931771) on source commit `1bcea7b9c04420109534fc2e61ad44e36db789f0`; the hosted workflow completed both the 27-trial network campaign and 54-trial browser-state campaign successfully.
+
 ## Scope status
 
 Verified here: M0 refund response loss, the AdminBench DOM observation/action race, three controlled network faults, and the three Prompt 08 browser-state faults after the six-cell policy/reproduction campaign and hosted regression gate pass. Eight fault types are verified; two remain. There is no frozen 36-case benchmark and no measured 90% seeded-failure detection rate. The public deployment serves static recorded evidence only. ShopBench and Stagehand remain out of scope.
