@@ -7,7 +7,7 @@
 
 - Active milestone / work slice: `Day 2 AdminBench second demo and A/B regression verified; awaiting user review`
 - Last completed verified gate: `M0 preserved and Day 2 acceptance passed: 3/3 each vulnerable clean, vulnerable faulted, hardened clean, hardened faulted; 3/3 saved-schedule reproduction`
-- Main branch / HEAD: `main at f42458a77b3fa274bdfd3be3e18b8ce2aad8894d before Prompt03 source changes; Prompt03 publication pending`
+- Main branch / HEAD: `main at Prompt03 source commit 936d0069e5d80ba3e3466c5a9d3f8c2bde34443e; source push verified; final log-publication check pending`
 - Project locally runnable: `YES — install, Chromium, typecheck, tests, and CLI runs verified`
 - Public deployment URL: `NONE VERIFIED`
 - M0 clean / faulted / repro: `3/3, 3/3, 3/3 — PASS (rerun after Day 2 integration)`
@@ -165,3 +165,10 @@
 - **Deployment/CI and scope:** No dashboard, GitHub Actions, deployment, Stagehand, ShopBench, remaining eight fault types, 36-case benchmark, or detection percentage was implemented or claimed.
 - **Outcome:** `DAY 2 / PROMPT 03: PASS` — every mandatory AdminBench count, artifact-integrity check, and negative test passed; M0 remains green; reviewer findings were fixed and rechecked. Await user review; stop before Day 3.
 - **Git state before publication:** `main` at starting SHA `f42458a77b3fa274bdfd3be3e18b8ce2aad8894d` plus reviewed Prompt03 changes; `git diff --check` exited 0. Run artifacts and A/B comparison are ignored. Commit/push/SHA confirmation remains to be appended after publication.
+
+#### Prompt 03 publication closure
+
+- **Commit and push:** Commit `936d0069e5d80ba3e3466c5a9d3f8c2bde34443e` (`feat: add verified AdminBench DOM race regression`) was created using the account-verified GitHub noreply author and pushed normally to `https://github.com/krishna31102004/browser-proof` branch `main`. `GIT_TERMINAL_PROMPT=0 git push origin main` exited 0 (`f42458a..936d006 main -> main`); no force push or history rewrite.
+- **Remote verification:** `git rev-parse HEAD` and `git ls-remote origin refs/heads/main` both returned `936d0069e5d80ba3e3466c5a9d3f8c2bde34443e`. `git status --short --branch` showed `## main...origin/main` and clean worktree immediately after this source push. Fetching immutable commit `936d006` and `cmp`-comparing `README.md`, `packages/runner/src/cli.ts`, `packages/runner/src/admin-run.ts`, `apps/demo-admin/src/server.ts`, `CODEX_RUN_LOG.md`, and `implementation_plan.md` returned `all_six_remote_files_byte_identical` (exit 0).
+- **Publication hygiene:** Staged-content pattern scan and path scan found no credentials, machine paths, prompt/reviewer config, run artifacts, trace ZIPs, or screenshots. All generated evidence remains local and ignored. The older public author-metadata privacy issue noted above remains; no rewrite was performed.
+- **Final status:** Prompt03 source is `PUBLISHED AND VERIFIED` on `main`. The log-only follow-up containing this closure will also be pushed; final local/remote SHA equality will be checked after it lands.
