@@ -78,6 +78,8 @@ The viewer has no runtime backend, credentials, or environment-variable dependen
 
 `.github/workflows/browserproof.yml` runs for pushes to `main`, pull requests to `main`, and manual dispatch. It installs with the frozen lockfile, installs Chromium, typechecks and tests all workspaces, checks both regression outcomes and the full M0/AdminBench gates, builds the static viewer and smoke-tests the production output. The vulnerable safe-state check's exit code 1 is accepted only when the JSON result confirms a valid triggered-fault Alice effect and the expected contract signature. Failure runs upload local artifacts and command logs for seven days. Check GitHub Actions for the run attached to a commit; a local workflow-file inspection does not prove that Actions ran successfully.
 
+Day 4 source verification passed in [GitHub Actions run 40833167948](https://github.com/krishna31102004/browser-proof/actions/runs/40833167948) on commit `0c94ba99caf1b04c39702d3fa065bb2cd8862209`.
+
 ## Scope status
 
 Verified here: M0 refund response loss, the AdminBench DOM observation/action race, the vulnerable/hardened regression comparison, five published curated evidence runs, and the static viewer/CI subset described above. Two fault types are verified; eight remain. There is no frozen 36-case benchmark and no measured 90% seeded-failure detection rate. The public deployment serves static recorded evidence only. ShopBench and Stagehand remain out of scope.
