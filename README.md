@@ -4,6 +4,20 @@ BrowserProof tests browser agents against controlled browser and network faults.
 
 The local demonstrations use synthetic SupportDesk and AdminBench data. They make no real payment operations and contact no third-party application service. The checked-in evidence viewer is static and read-only; it does not run hosted agents.
 
+## Public evidence viewer
+
+**Public demo:** [browserproof.vercel.app](https://browserproof.vercel.app)
+
+The public Vercel site serves five curated records from genuine local Playwright runs. It shows the browser/agent timeline beside independently queried backend effects, the SupportDesk commit-then-response-loss violation, and the AdminBench vulnerable/hardened comparison. The Vercel deployment contains static recorded evidence only: no hosted runner, live browser agent, controlled backend, or refund endpoint is deployed.
+
+To verify the public deployment and all published evidence assets from a local checkout:
+
+```bash
+pnpm run viewer:smoke:remote -- --url https://browserproof.vercel.app
+```
+
+This opens the actual anonymous HTTPS site in Chromium, checks every referenced JSON/JSONL/image asset, exercises the evidence routes and navigation, and captures desktop/tablet/mobile screenshots under the ignored `apps/viewer/.visual-review/remote-browserproof.vercel.app/` directory. It does not start a local preview server.
+
 ## Local runner
 
 Prerequisites: Node.js 22, pnpm 9.12.1, and Playwright Chromium.
@@ -66,4 +80,4 @@ The viewer has no runtime backend, credentials, or environment-variable dependen
 
 ## Scope status
 
-Verified here: M0 refund response loss, the AdminBench DOM observation/action race, the vulnerable/hardened regression comparison, real evidence export, and the static viewer/CI subset described above. No public deployment, ShopBench, Stagehand adapter, remaining fault types, 36-case benchmark or seeded-failure detection percentage is claimed.
+Verified here: M0 refund response loss, the AdminBench DOM observation/action race, the vulnerable/hardened regression comparison, five published curated evidence runs, and the static viewer/CI subset described above. Two fault types are verified; eight remain. There is no frozen 36-case benchmark and no measured 90% seeded-failure detection rate. The public deployment serves static recorded evidence only. ShopBench and Stagehand remain out of scope.

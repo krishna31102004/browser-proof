@@ -276,6 +276,9 @@ summary { cursor: pointer; font-size: 13px; font-weight: 620; }
   .timeline-compact .timeline-row { min-height: 43px; }
   .sequence-cell { padding: 6px 4px; font-size: 10px; }
   .sequence-cell time { font-size: 8px; }
+  .timeline-compact .lane-headings, .timeline-compact .timeline-row { grid-template-columns: 58px minmax(0, 1fr) minmax(0, 1fr); }
+  .timeline-compact .sequence-cell { padding: 3px 4px; }
+  .timeline-compact .sequence-cell time { font-size: 7.5px; letter-spacing: -.04em; white-space: nowrap; }
   .lane-cell { padding: 5px 4px; }
   .event-node { padding: 6px 6px; }
   .event-heading { font-size: 8px; }

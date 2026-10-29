@@ -7,7 +7,8 @@
     "test": "pnpm -r test",
     "bp": "tsx packages/runner/src/cli.ts",
     "viewer:build": "pnpm --filter @browserproof/viewer build",
-    "viewer:smoke": "pnpm --filter @browserproof/viewer smoke"
+    "viewer:smoke": "pnpm --filter @browserproof/viewer smoke",
+    "viewer:smoke:remote": "tsx scripts/viewer-remote-smoke.mts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

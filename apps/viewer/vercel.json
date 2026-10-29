@@ -1,0 +1,13 @@
+{
+  "headers": [
+    {
+      "source": "/demo/evidence/(.*)\\.jsonl",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/x-ndjson; charset=utf-8"
+        }
+      ]
+    }
+  ]
+}
