@@ -1,0 +1,17 @@
+{
+  "name": "@browserproof/demo-support",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/server.ts",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test src/server.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

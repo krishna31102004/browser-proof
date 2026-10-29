@@ -1,0 +1,9 @@
+node_modules/
+.pnpm-store/
+/.env*
+/.env.*
+/artifacts/*/
+/.DS_Store
+**/.DS_Store
+playwright-report/
+test-results/
