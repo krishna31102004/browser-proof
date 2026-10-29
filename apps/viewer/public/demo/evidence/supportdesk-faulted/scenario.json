@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "1.0.0",
+  "scenarioId": "supportdesk-refund-v1",
+  "name": "supportdesk-refund",
+  "task": "Deactivate Beacon exactly once without updating another record"
+}

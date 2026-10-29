@@ -49,7 +49,6 @@ interface AgentOutcome {
 
 async function runReferenceAgent(page: Page, events: EventWriter, nextActionId: () => string): Promise<AgentOutcome> {
   const stepId = "refund-task";
-  await page.goto("/");
   await page.waitForFunction(() => /eligible/i.test(document.querySelector('[data-testid="order-status"]')?.textContent ?? ""), undefined, { timeout: 3000 });
   const orderText = await page.getByTestId("order-status").innerText();
   await events.record("agent", "agent.observation", { step: "order_loaded", observedText: orderText }, { agentStepId: stepId });
@@ -161,16 +160,19 @@ export async function executeRun(options: RunOptions): Promise<RunSummary> {
     const page = await context.newPage();
     const pendingBrowserRequests = new Map<string, string[]>();
     const requestCommitStatus = new Map<string, boolean>();
+    const requestActionIds = new Map<string, string>();
     page.on("requestfailed", (request) => {
       const queue = pendingBrowserRequests.get(request.url());
       const requestId = queue?.shift();
       if (queue?.length === 0) pendingBrowserRequests.delete(request.url());
       const upstreamCommitted = requestId ? requestCommitStatus.get(requestId) ?? null : null;
-      void events.record("browser", "network.request_failed", { url: request.url(), failureText: request.failure()?.errorText ?? "unknown", upstreamCommitted, browserReceivedSuccess: false, ...(requestId ? { correlationStrength: "url_and_request_order" } : {}) }, requestId ? { requestId } : {});
+      const actionId = requestId ? requestActionIds.get(requestId) : undefined;
+      void events.record("browser", "network.request_failed", { url: request.url(), failureText: request.failure()?.errorText ?? "unknown", upstreamCommitted, browserReceivedSuccess: false, ...(requestId ? { correlationStrength: "url_and_request_order", requestId } : {}), ...(actionId ? { actionId } : {}) }, { ...(requestId ? { requestId } : {}), ...(actionId ? { actionId } : {}) });
     });
     await page.route("**/api/orders/*/refund", async (route: Route) => {
       const requestId = randomUUID();
       const actionId = activeActionId;
+      requestActionIds.set(requestId, actionId);
       const requestUrl = route.request().url();
       const pending = pendingBrowserRequests.get(requestUrl) ?? [];
       pending.push(requestId);
@@ -238,6 +240,7 @@ export async function executeRun(options: RunOptions): Promise<RunSummary> {
       activeActionId = randomUUID();
       return activeActionId;
     };
+    await page.goto("/");
     await page.screenshot({ path: join(screenshotsDir, "before-agent.png"), fullPage: true });
     try {
       agentOutcome = await runReferenceAgent(page, events, nextActionId);

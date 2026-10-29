@@ -8,6 +8,11 @@ node_modules/
 **/.DS_Store
 playwright-report/
 test-results/
+ci-evidence/
+/apps/viewer/dist/
+/apps/viewer/.visual-review/
+/apps/viewer/public/.demo-export-stage-*/
+/apps/viewer/public/demo.backup-*/
 # Local task instructions and the Codex-only reviewer configuration are not source-distribution files.
 /prompts/
 /browserproof_reviewer.toml

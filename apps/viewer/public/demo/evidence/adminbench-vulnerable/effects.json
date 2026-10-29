@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0.0",
+  "runId": "af2b1e6e-da3a-4092-8201-35b0d252d591",
+  "observerStatus": "complete",
+  "effects": [
+    {
+      "effectId": "e1240a2b-1939-488f-927e-0fd44eab843f",
+      "entityId": "alice",
+      "kind": "record_update",
+      "committedAt": "2026-10-29T03:26:58.454Z",
+      "actionId": "1e28322c-e1c4-4a0a-bc80-521558b88001",
+      "requestId": "af09b1c4-b284-4e97-8193-dba4ab83ac17"
+    }
+  ]
+}

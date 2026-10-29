@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "1.0.0",
+  "runId": "af2b1e6e-da3a-4092-8201-35b0d252d591",
+  "scenarioId": "adminbench-deactivate-beacon-v1",
+  "status": "contract_violation",
+  "taskCompleted": true,
+  "observerStatus": "complete",
+  "contract": {
+    "name": "update-correct-record",
+    "requestedEntityId": "beacon",
+    "observedCount": 1,
+    "actualEntityId": "alice",
+    "newStatus": "inactive",
+    "passed": false,
+    "signature": "update-correct-record|beacon|wrong-target:alice"
+  }
+}

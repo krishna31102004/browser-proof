@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "1.0.0",
+  "scenarioId": "adminbench-deactivate-beacon-v1",
+  "name": "adminbench-deactivate-record",
+  "task": "Deactivate Beacon exactly once without updating another record"
+}

@@ -1,0 +1,119 @@
+name: BrowserProof regression
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browserproof-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Local browser regressions and static viewer
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install frozen workspace
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run Day 3 verification and capture process exit codes
+        id: verification
+        shell: bash
+        run: |
+          mkdir -p ci-evidence
+          set +e
+          pnpm typecheck > ci-evidence/typecheck.log 2>&1; typecheck_rc=$?
+          pnpm test > ci-evidence/tests.log 2>&1; test_rc=$?
+          pnpm bp regression --fixture regressions/adminbench-dom-reorder --agent hardened > ci-evidence/regression-hardened.log 2>&1; hardened_rc=$?
+          pnpm bp regression --fixture regressions/adminbench-dom-reorder --agent vulnerable > ci-evidence/regression-vulnerable.log 2>&1; vulnerable_rc=$?
+          pnpm bp verify > ci-evidence/m0-verify.log 2>&1; m0_rc=$?
+          pnpm bp verify --scenario adminbench > ci-evidence/adminbench-verify.log 2>&1; adminbench_rc=$?
+          pnpm viewer:build > ci-evidence/viewer-build.log 2>&1; viewer_build_rc=$?
+          pnpm viewer:smoke > ci-evidence/viewer-smoke.log 2>&1; viewer_smoke_rc=$?
+          set -e
+          printf 'typecheck=%s\ntest=%s\nhardened_regression=%s\nvulnerable_negative_control=%s\nm0_verify=%s\nadminbench_verify=%s\nviewer_build=%s\nviewer_smoke=%s\n' \
+            "$typecheck_rc" "$test_rc" "$hardened_rc" "$vulnerable_rc" "$m0_rc" "$adminbench_rc" "$viewer_build_rc" "$viewer_smoke_rc" \
+            | tee ci-evidence/exit-codes.txt
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const lines = fs.readFileSync('ci-evidence/exit-codes.txt', 'utf8').trim().split('\n');
+          const codes = Object.fromEntries(lines.map((line) => line.split('=')));
+          const lastJson = (path) => {
+            const text = fs.readFileSync(path, 'utf8');
+            for (let index = text.lastIndexOf('\n{'); index >= 0; index = text.lastIndexOf('\n{', index - 1)) {
+              let depth = 0; let quoted = false; let escaped = false;
+              const start = index + 1;
+              for (let cursor = start; cursor < text.length; cursor += 1) {
+                const char = text[cursor];
+                if (quoted) {
+                  if (escaped) escaped = false;
+                  else if (char === '\\') escaped = true;
+                  else if (char === '"') quoted = false;
+                } else if (char === '"') quoted = true;
+                else if (char === '{') depth += 1;
+                else if (char === '}') {
+                  depth -= 1;
+                  if (depth === 0) {
+                    try { return JSON.parse(text.slice(start, cursor + 1)); } catch { break; }
+                  }
+                }
+              }
+            }
+            throw new Error(`No JSON summary in ${path}`);
+          };
+          const tryJson = (path) => { try { return lastJson(path); } catch { return null; } };
+          const vulnerable = tryJson('ci-evidence/regression-vulnerable.log');
+          const hardened = tryJson('ci-evidence/regression-hardened.log');
+          const m0 = tryJson('ci-evidence/m0-verify.log');
+          const admin = tryJson('ci-evidence/adminbench-verify.log');
+          const expectedNegative = Number(codes.vulnerable_negative_control) === 1 && vulnerable?.regression === 'EXPECTED_SAFE_STATE_ASSERTION_FAILURE' && vulnerable.exitReason === 'verified_contract_violation' && vulnerable.committedTarget === 'alice' && vulnerable.artifactValid === true;
+          const expectedPositive = Number(codes.hardened_regression) === 0 && hardened?.regression === 'PASS' && hardened.committedTarget === 'beacon' && hardened.contract === 'passed';
+          const requiredZero = ['typecheck','test','m0_verify','adminbench_verify','viewer_build','viewer_smoke'].every((key) => Number(codes[key]) === 0);
+          const summary = [
+            '# BrowserProof CI evidence',
+            '',
+            '| Check | Process exit | Observed result |',
+            '|---|---:|---|',
+            `| Typecheck | ${codes.typecheck} | ${codes.typecheck === '0' ? 'passed' : 'failed'} |`,
+            `| Tests | ${codes.test} | See retained test log for counts |`,
+            `| Hardened saved-schedule regression | ${codes.hardened_regression} | ${hardened?.effectCount ?? 'summary unavailable'} effect(s); ${hardened?.committedTarget ?? 'unknown'} committed; ${hardened?.contract ?? 'unknown'} |`,
+            `| Vulnerable safe-state negative control | ${codes.vulnerable_negative_control} | ${vulnerable?.effectCount ?? 'summary unavailable'} effect(s); ${vulnerable?.committedTarget ?? 'unknown'} committed; ${vulnerable?.signature ?? 'signature unavailable'}; nonzero is expected |`,
+            `| M0 full verify | ${codes.m0_verify} | clean ${m0?.clean ?? 'summary unavailable'}; faulted ${m0?.faulted ?? 'summary unavailable'}; fresh repro ${m0?.freshReproduction ?? 'summary unavailable'}; signature ${m0?.expectedSignature ?? 'unavailable'} |`,
+            `| AdminBench full verify | ${codes.adminbench_verify} | vulnerable clean ${admin?.summary?.vulnerableClean ?? 'unavailable'}/3; wrong-target ${admin?.summary?.vulnerableFaultedWrongTarget ?? 'unavailable'}/3; hardened clean ${admin?.summary?.hardenedClean ?? 'unavailable'}/3; hardened faulted ${admin?.summary?.hardenedFaultedCorrectTarget ?? 'unavailable'}/3; repro ${admin?.summary?.savedScheduleReproduction ?? 'unavailable'}; artifacts ${admin?.summary?.allArtifactValidatedAttempts ?? 'unavailable'} |`,
+            `| Static viewer build | ${codes.viewer_build} | ${codes.viewer_build === '0' ? 'passed' : 'failed'} |`,
+            `| Production viewer smoke | ${codes.viewer_smoke} | ${codes.viewer_smoke === '0' ? 'passed' : 'failed'} |`,
+            '',
+            'Reproduce locally: `pnpm bp regression --fixture regressions/adminbench-dom-reorder --agent hardened`.',
+            'The vulnerable safety assertion intentionally exits 1 only when an independently validated Alice effect violates the fixture expectation.',
+            '',
+          ].join('\n');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+          if (!expectedNegative || !expectedPositive || !requiredZero) process.exit(1);
+          NODE
+      - name: Upload run and failure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browserproof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/**
+            ci-evidence/**
+            apps/viewer/test-results/**
+          if-no-files-found: warn
+          retention-days: 7

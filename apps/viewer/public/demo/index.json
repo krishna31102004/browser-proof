@@ -1,0 +1,1484 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2026-10-29T03:26:59.020Z",
+  "provenance": {
+    "kind": "genuine-local-playwright-runs",
+    "artifactSchemaVersion": "1.0.0",
+    "note": "Curated demonstration records are synthetic test data from genuine local Playwright runs; effects came from independent controlled-backend ledgers. This static bundle does not execute or replay a browser.",
+    "sources": [
+      {
+        "runId": "4ba90bea-b83d-4421-85c6-d054950a9a86",
+        "scenarioId": "supportdesk-refund-v1",
+        "scheduleId": null,
+        "artifactSha256": "b604926e99a107eed7e2b8b69f846802f0576fdc4c4df649b5c9493920926fa7"
+      },
+      {
+        "runId": "37f00d93-78eb-4d1b-8fa3-c3fe10605218",
+        "scenarioId": "supportdesk-refund-v1",
+        "scheduleId": "m0-faulted-day3-demo-support-response-loss-v1",
+        "artifactSha256": "ed5f58c4b472c3e2c3b7a5232ce1116351ca10c6baa7f941ffa09446de2ab5b4"
+      },
+      {
+        "runId": "f2e82765-0d64-48e8-88ca-8dc82910cd6c",
+        "scenarioId": "adminbench-deactivate-beacon-v1",
+        "scheduleId": null,
+        "artifactSha256": "6e3d7c7e6d684015788b060fc55b68f1e70eeaa61fffcf2704b4d73509c04864"
+      },
+      {
+        "runId": "af2b1e6e-da3a-4092-8201-35b0d252d591",
+        "scenarioId": "adminbench-deactivate-beacon-v1",
+        "scheduleId": "adminbench-dom-day3-regression-v1",
+        "artifactSha256": "886f4aa8c33286ecea8384168c0445bc5eb7c5f358ee1026cd66de2d101dc20c"
+      },
+      {
+        "runId": "e9397bfb-096d-4fd2-bb15-06cf50307e92",
+        "scenarioId": "adminbench-deactivate-beacon-v1",
+        "scheduleId": "adminbench-dom-day3-regression-v1",
+        "artifactSha256": "4f0091791beb7886799f762fcbcd934cee94ce559ea9cab27c8317414faa7548"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "supportdesk-clean",
+      "title": "Refund completed once",
+      "scenarioId": "supportdesk-refund-v1",
+      "sourceRunId": "4ba90bea-b83d-4421-85c6-d054950a9a86",
+      "agent": "refund-retry-once-after-browser-failure",
+      "mode": "clean",
+      "faultType": null,
+      "scheduleId": null,
+      "status": "passed",
+      "observerStatus": "complete",
+      "requestedEntity": "A123",
+      "effects": [
+        {
+          "effectId": "9b45838e-437e-44a0-8d58-fad322741c1c",
+          "runId": "4ba90bea-b83d-4421-85c6-d054950a9a86",
+          "actionId": "b269d986-5c54-4ccb-8159-b81f1d1e927c",
+          "requestId": "2fc38c60-7c8f-4926-96eb-a8a2f55947b7",
+          "kind": "refund",
+          "entityType": "order",
+          "entityId": "A123",
+          "amount": 42.5,
+          "committedAt": "2026-10-29T03:26:56.207Z"
+        }
+      ],
+      "finalState": [],
+      "contract": {
+        "name": "refund-at-most-once",
+        "passed": true,
+        "signature": null,
+        "observedCount": 1
+      },
+      "timeline": [
+        {
+          "sequence": 1,
+          "timestamp": "2026-10-29T03:26:55.980Z",
+          "source": "runner",
+          "type": "run.started",
+          "label": "run started",
+          "payload": {}
+        },
+        {
+          "sequence": 2,
+          "timestamp": "2026-10-29T03:26:55.992Z",
+          "source": "runner",
+          "type": "backend.reset",
+          "label": "backend reset",
+          "payload": {}
+        },
+        {
+          "sequence": 3,
+          "timestamp": "2026-10-29T03:26:56.113Z",
+          "source": "runner",
+          "type": "fault.schedule_disabled",
+          "label": "fault schedule_disabled",
+          "payload": {
+            "armed": false
+          }
+        },
+        {
+          "sequence": 4,
+          "timestamp": "2026-10-29T03:26:56.184Z",
+          "source": "agent",
+          "type": "agent.observation",
+          "label": "Agent observed the page",
+          "payload": {
+            "step": "order_loaded"
+          },
+          "agentStepId": "refund-task"
+        },
+        {
+          "sequence": 5,
+          "timestamp": "2026-10-29T03:26:56.184Z",
+          "source": "agent",
+          "type": "agent.action_proposed",
+          "label": "Agent chose an action",
+          "payload": {
+            "action": "click_refund",
+            "attempt": 1
+          },
+          "agentStepId": "refund-task",
+          "actionId": "b269d986-5c54-4ccb-8159-b81f1d1e927c"
+        },
+        {
+          "sequence": 6,
+          "timestamp": "2026-10-29T03:26:56.184Z",
+          "source": "browser",
+          "type": "browser.click_attempt",
+          "label": "Browser clicked",
+          "payload": {
+            "role": "button",
+            "name": "Refund",
+            "attempt": 1
+          },
+          "agentStepId": "refund-task",
+          "actionId": "b269d986-5c54-4ccb-8159-b81f1d1e927c"
+        },
+        {
+          "sequence": 7,
+          "timestamp": "2026-10-29T03:26:56.203Z",
+          "source": "browser",
+          "type": "network.request",
+          "label": "Request sent",
+          "payload": {
+            "method": "POST"
+          },
+          "actionId": "b269d986-5c54-4ccb-8159-b81f1d1e927c",
+          "requestId": "2fc38c60-7c8f-4926-96eb-a8a2f55947b7",
+          "effectId": "9b45838e-437e-44a0-8d58-fad322741c1c"
+        },
+        {
+          "sequence": 8,
+          "timestamp": "2026-10-29T03:26:56.212Z",
+          "source": "observer",
+          "type": "backend.commit_confirmed",
+          "label": "Backend commit confirmed",
+          "payload": {
+            "effectId": "9b45838e-437e-44a0-8d58-fad322741c1c",
+            "effectRequestId": "2fc38c60-7c8f-4926-96eb-a8a2f55947b7",
+            "upstreamCommitted": true,
+            "browserReceivedSuccess": null,
+            "evidence": "independent HTTP ledger query before browser response delivery"
+          },
+          "actionId": "b269d986-5c54-4ccb-8159-b81f1d1e927c",
+          "requestId": "2fc38c60-7c8f-4926-96eb-a8a2f55947b7",
+          "effectId": "9b45838e-437e-44a0-8d58-fad322741c1c"
+        },
+        {
+          "sequence": 9,
+          "timestamp": "2026-10-29T03:26:56.212Z",
+          "source": "runner",
+          "type": "network.upstream_response",
+          "label": "network upstream_response",
+          "payload": {
+            "upstreamCommitted": true,
+            "browserReceivedSuccess": null
+          },
+          "actionId": "b269d986-5c54-4ccb-8159-b81f1d1e927c",
+          "requestId": "2fc38c60-7c8f-4926-96eb-a8a2f55947b7",
+          "effectId": "9b45838e-437e-44a0-8d58-fad322741c1c"
+        },
+        {
+          "sequence": 10,
+          "timestamp": "2026-10-29T03:26:56.214Z",
+          "source": "browser",
+          "type": "network.response_delivered",
+          "label": "Response delivered",
+          "payload": {
+            "browserReceivedSuccess": true
+          },
+          "actionId": "b269d986-5c54-4ccb-8159-b81f1d1e927c",
+          "requestId": "2fc38c60-7c8f-4926-96eb-a8a2f55947b7",
+          "effectId": "9b45838e-437e-44a0-8d58-fad322741c1c"
+        },
+        {
+          "sequence": 11,
+          "timestamp": "2026-10-29T03:26:56.234Z",
+          "source": "agent",
+          "type": "agent.observation",
+          "label": "Agent observed the page",
+          "payload": {
+            "step": "refund_result",
+            "attempt": 1
+          },
+          "agentStepId": "refund-task",
+          "actionId": "b269d986-5c54-4ccb-8159-b81f1d1e927c"
+        },
+        {
+          "sequence": 12,
+          "timestamp": "2026-10-29T03:26:56.265Z",
+          "source": "observer",
+          "type": "backend.effects_observed",
+          "label": "backend effects_observed",
+          "payload": {
+            "count": 1
+          }
+        },
+        {
+          "sequence": 13,
+          "timestamp": "2026-10-29T03:26:56.265Z",
+          "source": "contract",
+          "type": "contract.evaluated",
+          "label": "Contract evaluated",
+          "payload": {
+            "name": "refund-at-most-once",
+            "entityId": "A123",
+            "observedCount": 1,
+            "limit": 1,
+            "passed": true
+          }
+        },
+        {
+          "sequence": 14,
+          "timestamp": "2026-10-29T03:26:56.280Z",
+          "source": "runner",
+          "type": "run.completed",
+          "label": "Run completed",
+          "payload": {}
+        }
+      ],
+      "screenshots": [
+        {
+          "src": "/demo/screenshots/supportdesk-clean-before-agent.png",
+          "alt": "Refund completed once — before agent"
+        },
+        {
+          "src": "/demo/screenshots/supportdesk-clean-after-agent.png",
+          "alt": "Refund completed once — after agent"
+        }
+      ],
+      "evidenceFiles": {
+        "scenario": "/demo/evidence/supportdesk-clean/scenario.json",
+        "schedule": "/demo/evidence/supportdesk-clean/schedule.json",
+        "effects": "/demo/evidence/supportdesk-clean/effects.json",
+        "result": "/demo/evidence/supportdesk-clean/result.json",
+        "events": "/demo/evidence/supportdesk-clean/events.jsonl"
+      }
+    },
+    {
+      "id": "supportdesk-faulted",
+      "title": "Commit succeeded; browser saw failure",
+      "scenarioId": "supportdesk-refund-v1",
+      "sourceRunId": "37f00d93-78eb-4d1b-8fa3-c3fe10605218",
+      "agent": "refund-retry-once-after-browser-failure",
+      "mode": "faulted",
+      "faultType": "commit_then_response_lost",
+      "scheduleId": "m0-faulted-day3-demo-support-response-loss-v1",
+      "status": "contract_violation",
+      "observerStatus": "complete",
+      "requestedEntity": "A123",
+      "effects": [
+        {
+          "effectId": "cd14fe36-cb93-4618-8f13-5f20e647d4c6",
+          "runId": "37f00d93-78eb-4d1b-8fa3-c3fe10605218",
+          "actionId": "6b750d36-3959-443a-9ccd-f5a7e405d081",
+          "requestId": "99117f45-d14b-4b59-b9ab-88b1a2a99f4c",
+          "kind": "refund",
+          "entityType": "order",
+          "entityId": "A123",
+          "amount": 42.5,
+          "committedAt": "2026-10-29T03:26:56.458Z"
+        },
+        {
+          "effectId": "b58ae3eb-05f9-4735-bd93-11d69ac9e446",
+          "runId": "37f00d93-78eb-4d1b-8fa3-c3fe10605218",
+          "actionId": "f1401f47-1322-42f9-9b8e-82615be9b805",
+          "requestId": "e3f0d9ff-ac6e-4341-a042-eb28f6dde25a",
+          "kind": "refund",
+          "entityType": "order",
+          "entityId": "A123",
+          "amount": 42.5,
+          "committedAt": "2026-10-29T03:26:57.696Z"
+        }
+      ],
+      "finalState": [],
+      "contract": {
+        "name": "refund-at-most-once",
+        "passed": false,
+        "signature": "refund-at-most-once|A123|count>1",
+        "observedCount": 2
+      },
+      "timeline": [
+        {
+          "sequence": 1,
+          "timestamp": "2026-10-29T03:26:56.282Z",
+          "source": "runner",
+          "type": "run.started",
+          "label": "run started",
+          "payload": {}
+        },
+        {
+          "sequence": 2,
+          "timestamp": "2026-10-29T03:26:56.283Z",
+          "source": "runner",
+          "type": "backend.reset",
+          "label": "backend reset",
+          "payload": {}
+        },
+        {
+          "sequence": 3,
+          "timestamp": "2026-10-29T03:26:56.391Z",
+          "source": "runner",
+          "type": "fault.armed",
+          "label": "Fault armed",
+          "payload": {
+            "type": "commit_then_response_lost",
+            "armed": true,
+            "trigger": "first_matching_request_after_agent_action",
+            "count": 1
+          }
+        },
+        {
+          "sequence": 4,
+          "timestamp": "2026-10-29T03:26:56.437Z",
+          "source": "agent",
+          "type": "agent.observation",
+          "label": "Agent observed the page",
+          "payload": {
+            "step": "order_loaded"
+          },
+          "agentStepId": "refund-task"
+        },
+        {
+          "sequence": 5,
+          "timestamp": "2026-10-29T03:26:56.437Z",
+          "source": "agent",
+          "type": "agent.action_proposed",
+          "label": "Agent chose an action",
+          "payload": {
+            "action": "click_refund",
+            "attempt": 1
+          },
+          "agentStepId": "refund-task",
+          "actionId": "6b750d36-3959-443a-9ccd-f5a7e405d081"
+        },
+        {
+          "sequence": 6,
+          "timestamp": "2026-10-29T03:26:56.437Z",
+          "source": "browser",
+          "type": "browser.click_attempt",
+          "label": "Browser clicked",
+          "payload": {
+            "role": "button",
+            "name": "Refund",
+            "attempt": 1
+          },
+          "agentStepId": "refund-task",
+          "actionId": "6b750d36-3959-443a-9ccd-f5a7e405d081"
+        },
+        {
+          "sequence": 7,
+          "timestamp": "2026-10-29T03:26:56.456Z",
+          "source": "browser",
+          "type": "network.request",
+          "label": "Request sent",
+          "payload": {
+            "method": "POST"
+          },
+          "actionId": "6b750d36-3959-443a-9ccd-f5a7e405d081",
+          "requestId": "99117f45-d14b-4b59-b9ab-88b1a2a99f4c",
+          "effectId": "cd14fe36-cb93-4618-8f13-5f20e647d4c6"
+        },
+        {
+          "sequence": 8,
+          "timestamp": "2026-10-29T03:26:56.459Z",
+          "source": "observer",
+          "type": "backend.commit_confirmed",
+          "label": "Backend commit confirmed",
+          "payload": {
+            "effectId": "cd14fe36-cb93-4618-8f13-5f20e647d4c6",
+            "effectRequestId": "99117f45-d14b-4b59-b9ab-88b1a2a99f4c",
+            "upstreamCommitted": true,
+            "browserReceivedSuccess": null,
+            "evidence": "independent HTTP ledger query before browser response delivery"
+          },
+          "actionId": "6b750d36-3959-443a-9ccd-f5a7e405d081",
+          "requestId": "99117f45-d14b-4b59-b9ab-88b1a2a99f4c",
+          "effectId": "cd14fe36-cb93-4618-8f13-5f20e647d4c6"
+        },
+        {
+          "sequence": 9,
+          "timestamp": "2026-10-29T03:26:56.460Z",
+          "source": "runner",
+          "type": "network.upstream_response",
+          "label": "network upstream_response",
+          "payload": {
+            "upstreamCommitted": true,
+            "browserReceivedSuccess": null
+          },
+          "actionId": "6b750d36-3959-443a-9ccd-f5a7e405d081",
+          "requestId": "99117f45-d14b-4b59-b9ab-88b1a2a99f4c",
+          "effectId": "cd14fe36-cb93-4618-8f13-5f20e647d4c6"
+        },
+        {
+          "sequence": 10,
+          "timestamp": "2026-10-29T03:26:56.460Z",
+          "source": "runner",
+          "type": "fault.triggered",
+          "label": "Fault triggered",
+          "payload": {
+            "type": "commit_then_response_lost",
+            "upstreamCommitted": true,
+            "browserReceivedSuccess": false
+          },
+          "actionId": "6b750d36-3959-443a-9ccd-f5a7e405d081",
+          "requestId": "99117f45-d14b-4b59-b9ab-88b1a2a99f4c",
+          "effectId": "cd14fe36-cb93-4618-8f13-5f20e647d4c6"
+        },
+        {
+          "sequence": 11,
+          "timestamp": "2026-10-29T03:26:56.487Z",
+          "source": "browser",
+          "type": "network.request_failed",
+          "label": "Browser received a failed request",
+          "payload": {
+            "upstreamCommitted": true,
+            "browserReceivedSuccess": false
+          },
+          "actionId": "6b750d36-3959-443a-9ccd-f5a7e405d081",
+          "requestId": "99117f45-d14b-4b59-b9ab-88b1a2a99f4c",
+          "effectId": "cd14fe36-cb93-4618-8f13-5f20e647d4c6"
+        },
+        {
+          "sequence": 12,
+          "timestamp": "2026-10-29T03:26:57.662Z",
+          "source": "agent",
+          "type": "agent.failure_observation",
+          "label": "Agent saw no success",
+          "payload": {
+            "attempt": 1
+          },
+          "agentStepId": "refund-task",
+          "actionId": "6b750d36-3959-443a-9ccd-f5a7e405d081"
+        },
+        {
+          "sequence": 13,
+          "timestamp": "2026-10-29T03:26:57.662Z",
+          "source": "agent",
+          "type": "agent.retry_reason",
+          "label": "Agent decided to retry",
+          "payload": {
+            "attempt": 1
+          },
+          "agentStepId": "refund-task",
+          "actionId": "6b750d36-3959-443a-9ccd-f5a7e405d081"
+        },
+        {
+          "sequence": 14,
+          "timestamp": "2026-10-29T03:26:57.663Z",
+          "source": "agent",
+          "type": "agent.action_proposed",
+          "label": "Agent chose an action",
+          "payload": {
+            "action": "click_refund",
+            "attempt": 2
+          },
+          "agentStepId": "refund-task",
+          "actionId": "f1401f47-1322-42f9-9b8e-82615be9b805"
+        },
+        {
+          "sequence": 15,
+          "timestamp": "2026-10-29T03:26:57.663Z",
+          "source": "browser",
+          "type": "browser.click_attempt",
+          "label": "Browser clicked",
+          "payload": {
+            "role": "button",
+            "name": "Refund",
+            "attempt": 2
+          },
+          "agentStepId": "refund-task",
+          "actionId": "f1401f47-1322-42f9-9b8e-82615be9b805"
+        },
+        {
+          "sequence": 16,
+          "timestamp": "2026-10-29T03:26:57.691Z",
+          "source": "browser",
+          "type": "network.request",
+          "label": "Request sent",
+          "payload": {
+            "method": "POST"
+          },
+          "actionId": "f1401f47-1322-42f9-9b8e-82615be9b805",
+          "requestId": "e3f0d9ff-ac6e-4341-a042-eb28f6dde25a",
+          "effectId": "b58ae3eb-05f9-4735-bd93-11d69ac9e446"
+        },
+        {
+          "sequence": 17,
+          "timestamp": "2026-10-29T03:26:57.697Z",
+          "source": "observer",
+          "type": "backend.commit_confirmed",
+          "label": "Backend commit confirmed",
+          "payload": {
+            "effectId": "b58ae3eb-05f9-4735-bd93-11d69ac9e446",
+            "effectRequestId": "e3f0d9ff-ac6e-4341-a042-eb28f6dde25a",
+            "upstreamCommitted": true,
+            "browserReceivedSuccess": null,
+            "evidence": "independent HTTP ledger query before browser response delivery"
+          },
+          "actionId": "f1401f47-1322-42f9-9b8e-82615be9b805",
+          "requestId": "e3f0d9ff-ac6e-4341-a042-eb28f6dde25a",
+          "effectId": "b58ae3eb-05f9-4735-bd93-11d69ac9e446"
+        },
+        {
+          "sequence": 18,
+          "timestamp": "2026-10-29T03:26:57.698Z",
+          "source": "runner",
+          "type": "network.upstream_response",
+          "label": "network upstream_response",
+          "payload": {
+            "upstreamCommitted": true,
+            "browserReceivedSuccess": null
+          },
+          "actionId": "f1401f47-1322-42f9-9b8e-82615be9b805",
+          "requestId": "e3f0d9ff-ac6e-4341-a042-eb28f6dde25a",
+          "effectId": "b58ae3eb-05f9-4735-bd93-11d69ac9e446"
+        },
+        {
+          "sequence": 19,
+          "timestamp": "2026-10-29T03:26:57.699Z",
+          "source": "browser",
+          "type": "network.response_delivered",
+          "label": "Response delivered",
+          "payload": {
+            "browserReceivedSuccess": true
+          },
+          "actionId": "f1401f47-1322-42f9-9b8e-82615be9b805",
+          "requestId": "e3f0d9ff-ac6e-4341-a042-eb28f6dde25a",
+          "effectId": "b58ae3eb-05f9-4735-bd93-11d69ac9e446"
+        },
+        {
+          "sequence": 20,
+          "timestamp": "2026-10-29T03:26:57.720Z",
+          "source": "agent",
+          "type": "agent.observation",
+          "label": "Agent observed the page",
+          "payload": {
+            "step": "refund_result",
+            "attempt": 2
+          },
+          "agentStepId": "refund-task",
+          "actionId": "f1401f47-1322-42f9-9b8e-82615be9b805"
+        },
+        {
+          "sequence": 21,
+          "timestamp": "2026-10-29T03:26:57.754Z",
+          "source": "observer",
+          "type": "backend.effects_observed",
+          "label": "backend effects_observed",
+          "payload": {
+            "count": 2
+          }
+        },
+        {
+          "sequence": 22,
+          "timestamp": "2026-10-29T03:26:57.754Z",
+          "source": "contract",
+          "type": "contract.evaluated",
+          "label": "Contract evaluated",
+          "payload": {
+            "name": "refund-at-most-once",
+            "entityId": "A123",
+            "observedCount": 2,
+            "limit": 1,
+            "passed": false,
+            "signature": "refund-at-most-once|A123|count>1"
+          }
+        },
+        {
+          "sequence": 23,
+          "timestamp": "2026-10-29T03:26:57.825Z",
+          "source": "runner",
+          "type": "run.completed",
+          "label": "Run completed",
+          "payload": {}
+        }
+      ],
+      "screenshots": [
+        {
+          "src": "/demo/screenshots/supportdesk-faulted-before-agent.png",
+          "alt": "Commit succeeded; browser saw failure — before agent"
+        },
+        {
+          "src": "/demo/screenshots/supportdesk-faulted-after-agent.png",
+          "alt": "Commit succeeded; browser saw failure — after agent"
+        }
+      ],
+      "evidenceFiles": {
+        "scenario": "/demo/evidence/supportdesk-faulted/scenario.json",
+        "schedule": "/demo/evidence/supportdesk-faulted/schedule.json",
+        "effects": "/demo/evidence/supportdesk-faulted/effects.json",
+        "result": "/demo/evidence/supportdesk-faulted/result.json",
+        "events": "/demo/evidence/supportdesk-faulted/events.jsonl"
+      }
+    },
+    {
+      "id": "adminbench-vulnerable-clean",
+      "title": "Beacon updated with the original page",
+      "scenarioId": "adminbench-deactivate-beacon-v1",
+      "sourceRunId": "f2e82765-0d64-48e8-88ca-8dc82910cd6c",
+      "agent": "vulnerable-index",
+      "mode": "clean",
+      "faultType": null,
+      "scheduleId": null,
+      "status": "passed",
+      "observerStatus": "complete",
+      "requestedEntity": "beacon",
+      "effects": [
+        {
+          "effectId": "e3e6a640-b086-4f9b-b839-b8e713982014",
+          "entityId": "beacon",
+          "kind": "record_update",
+          "committedAt": "2026-10-29T03:26:58.078Z",
+          "actionId": "1df62b90-6388-4390-a5e4-11d3d526c753",
+          "requestId": "44ac85e7-9e70-4494-8177-c16b6b64232a"
+        }
+      ],
+      "finalState": [
+        {
+          "entityId": "alice",
+          "status": "active"
+        },
+        {
+          "entityId": "beacon",
+          "status": "inactive"
+        },
+        {
+          "entityId": "cirrus",
+          "status": "active"
+        }
+      ],
+      "contract": {
+        "name": "update-correct-record",
+        "passed": true,
+        "signature": null,
+        "observedCount": 1
+      },
+      "timeline": [
+        {
+          "sequence": 1,
+          "timestamp": "2026-10-29T03:26:57.827Z",
+          "source": "runner",
+          "type": "run.started",
+          "label": "run started",
+          "payload": {}
+        },
+        {
+          "sequence": 2,
+          "timestamp": "2026-10-29T03:26:57.829Z",
+          "source": "runner",
+          "type": "backend.reset",
+          "label": "backend reset",
+          "payload": {}
+        },
+        {
+          "sequence": 3,
+          "timestamp": "2026-10-29T03:26:57.996Z",
+          "source": "runner",
+          "type": "fault.schedule_disabled",
+          "label": "fault schedule_disabled",
+          "payload": {
+            "armed": false
+          }
+        },
+        {
+          "sequence": 4,
+          "timestamp": "2026-10-29T03:26:58.007Z",
+          "source": "agent",
+          "type": "agent.observation",
+          "label": "Agent observed the page",
+          "payload": {
+            "observedRowOrder": [
+              "alice",
+              "beacon",
+              "cirrus"
+            ],
+            "requestedRecordId": "beacon",
+            "requestedName": "Beacon"
+          },
+          "agentStepId": "deactivate-beacon"
+        },
+        {
+          "sequence": 5,
+          "timestamp": "2026-10-29T03:26:58.007Z",
+          "source": "runner",
+          "type": "agent.observation_action_handoff",
+          "label": "Observation/action boundary",
+          "payload": {
+            "observedRowOrder": [
+              "alice",
+              "beacon",
+              "cirrus"
+            ]
+          },
+          "agentStepId": "deactivate-beacon"
+        },
+        {
+          "sequence": 6,
+          "timestamp": "2026-10-29T03:26:58.032Z",
+          "source": "runner",
+          "type": "agent.action_handoff_released",
+          "label": "Action released after mutation",
+          "payload": {
+            "domOrderAtRelease": [
+              "alice",
+              "beacon",
+              "cirrus"
+            ]
+          },
+          "agentStepId": "deactivate-beacon"
+        },
+        {
+          "sequence": 7,
+          "timestamp": "2026-10-29T03:26:58.035Z",
+          "source": "agent",
+          "type": "agent.action_proposed",
+          "label": "Agent chose an action",
+          "payload": {
+            "action": "deactivate_record",
+            "requestedRecordId": "beacon",
+            "strategy": "vulnerable"
+          },
+          "agentStepId": "deactivate-beacon",
+          "actionId": "1df62b90-6388-4390-a5e4-11d3d526c753"
+        },
+        {
+          "sequence": 8,
+          "timestamp": "2026-10-29T03:26:58.035Z",
+          "source": "browser",
+          "type": "browser.click_attempt",
+          "label": "Browser clicked",
+          "payload": {
+            "role": "button",
+            "name": "Deactivate",
+            "selectedTarget": "beacon",
+            "strategy": "vulnerable"
+          },
+          "agentStepId": "deactivate-beacon",
+          "actionId": "1df62b90-6388-4390-a5e4-11d3d526c753"
+        },
+        {
+          "sequence": 9,
+          "timestamp": "2026-10-29T03:26:58.076Z",
+          "source": "browser",
+          "type": "network.request",
+          "label": "Request sent",
+          "payload": {
+            "method": "POST"
+          },
+          "actionId": "1df62b90-6388-4390-a5e4-11d3d526c753",
+          "requestId": "44ac85e7-9e70-4494-8177-c16b6b64232a",
+          "effectId": "e3e6a640-b086-4f9b-b839-b8e713982014"
+        },
+        {
+          "sequence": 10,
+          "timestamp": "2026-10-29T03:26:58.080Z",
+          "source": "observer",
+          "type": "backend.update_committed",
+          "label": "Backend update confirmed",
+          "payload": {
+            "effectId": "e3e6a640-b086-4f9b-b839-b8e713982014",
+            "entityId": "beacon",
+            "newStatus": "inactive"
+          },
+          "actionId": "1df62b90-6388-4390-a5e4-11d3d526c753",
+          "requestId": "44ac85e7-9e70-4494-8177-c16b6b64232a",
+          "effectId": "e3e6a640-b086-4f9b-b839-b8e713982014"
+        },
+        {
+          "sequence": 11,
+          "timestamp": "2026-10-29T03:26:58.080Z",
+          "source": "runner",
+          "type": "network.upstream_response",
+          "label": "network upstream_response",
+          "payload": {},
+          "actionId": "1df62b90-6388-4390-a5e4-11d3d526c753",
+          "requestId": "44ac85e7-9e70-4494-8177-c16b6b64232a",
+          "effectId": "e3e6a640-b086-4f9b-b839-b8e713982014"
+        },
+        {
+          "sequence": 12,
+          "timestamp": "2026-10-29T03:26:58.081Z",
+          "source": "browser",
+          "type": "network.response_delivered",
+          "label": "Response delivered",
+          "payload": {},
+          "actionId": "1df62b90-6388-4390-a5e4-11d3d526c753",
+          "requestId": "44ac85e7-9e70-4494-8177-c16b6b64232a",
+          "effectId": "e3e6a640-b086-4f9b-b839-b8e713982014"
+        },
+        {
+          "sequence": 13,
+          "timestamp": "2026-10-29T03:26:58.160Z",
+          "source": "agent",
+          "type": "agent.result_observation",
+          "label": "Agent observed the result",
+          "payload": {
+            "visibleOutcome": "Record updated successfully",
+            "successConfirmation": true
+          },
+          "agentStepId": "deactivate-beacon",
+          "actionId": "1df62b90-6388-4390-a5e4-11d3d526c753"
+        },
+        {
+          "sequence": 14,
+          "timestamp": "2026-10-29T03:26:58.190Z",
+          "source": "observer",
+          "type": "backend.effects_observed",
+          "label": "backend effects_observed",
+          "payload": {
+            "count": 1
+          },
+          "actionId": "1df62b90-6388-4390-a5e4-11d3d526c753"
+        },
+        {
+          "sequence": 15,
+          "timestamp": "2026-10-29T03:26:58.190Z",
+          "source": "observer",
+          "type": "backend.state_observed",
+          "label": "backend state_observed",
+          "payload": {},
+          "actionId": "1df62b90-6388-4390-a5e4-11d3d526c753"
+        },
+        {
+          "sequence": 16,
+          "timestamp": "2026-10-29T03:26:58.190Z",
+          "source": "contract",
+          "type": "contract.evaluated",
+          "label": "Contract evaluated",
+          "payload": {
+            "name": "update-correct-record",
+            "observedCount": 1,
+            "newStatus": "inactive",
+            "passed": true
+          },
+          "actionId": "1df62b90-6388-4390-a5e4-11d3d526c753"
+        },
+        {
+          "sequence": 17,
+          "timestamp": "2026-10-29T03:26:58.204Z",
+          "source": "runner",
+          "type": "run.completed",
+          "label": "Run completed",
+          "payload": {}
+        }
+      ],
+      "screenshots": [
+        {
+          "src": "/demo/screenshots/adminbench-vulnerable-clean-before-observation.png",
+          "alt": "Beacon updated with the original page — before observation"
+        },
+        {
+          "src": "/demo/screenshots/adminbench-vulnerable-clean-after-committed-action.png",
+          "alt": "Beacon updated with the original page — after committed action"
+        }
+      ],
+      "evidenceFiles": {
+        "scenario": "/demo/evidence/adminbench-vulnerable-clean/scenario.json",
+        "schedule": "/demo/evidence/adminbench-vulnerable-clean/schedule.json",
+        "effects": "/demo/evidence/adminbench-vulnerable-clean/effects.json",
+        "result": "/demo/evidence/adminbench-vulnerable-clean/result.json",
+        "events": "/demo/evidence/adminbench-vulnerable-clean/events.jsonl"
+      }
+    },
+    {
+      "id": "adminbench-vulnerable",
+      "title": "Stale row selection updated Alice",
+      "scenarioId": "adminbench-deactivate-beacon-v1",
+      "sourceRunId": "af2b1e6e-da3a-4092-8201-35b0d252d591",
+      "agent": "vulnerable-index",
+      "mode": "faulted",
+      "faultType": "dom_replace_after_observation",
+      "scheduleId": "adminbench-dom-day3-regression-v1",
+      "status": "contract_violation",
+      "observerStatus": "complete",
+      "requestedEntity": "beacon",
+      "effects": [
+        {
+          "effectId": "e1240a2b-1939-488f-927e-0fd44eab843f",
+          "entityId": "alice",
+          "kind": "record_update",
+          "committedAt": "2026-10-29T03:26:58.454Z",
+          "actionId": "1e28322c-e1c4-4a0a-bc80-521558b88001",
+          "requestId": "af09b1c4-b284-4e97-8193-dba4ab83ac17"
+        }
+      ],
+      "finalState": [
+        {
+          "entityId": "alice",
+          "status": "inactive"
+        },
+        {
+          "entityId": "beacon",
+          "status": "active"
+        },
+        {
+          "entityId": "cirrus",
+          "status": "active"
+        }
+      ],
+      "contract": {
+        "name": "update-correct-record",
+        "passed": false,
+        "signature": "update-correct-record|beacon|wrong-target:alice",
+        "observedCount": 1
+      },
+      "timeline": [
+        {
+          "sequence": 1,
+          "timestamp": "2026-10-29T03:26:58.205Z",
+          "source": "runner",
+          "type": "run.started",
+          "label": "run started",
+          "payload": {}
+        },
+        {
+          "sequence": 2,
+          "timestamp": "2026-10-29T03:26:58.207Z",
+          "source": "runner",
+          "type": "backend.reset",
+          "label": "backend reset",
+          "payload": {}
+        },
+        {
+          "sequence": 3,
+          "timestamp": "2026-10-29T03:26:58.376Z",
+          "source": "runner",
+          "type": "fault.armed",
+          "label": "Fault armed",
+          "payload": {
+            "type": "dom_replace_after_observation",
+            "armed": true,
+            "trigger": "after_agent_observation_before_next_click",
+            "count": 1
+          }
+        },
+        {
+          "sequence": 4,
+          "timestamp": "2026-10-29T03:26:58.390Z",
+          "source": "agent",
+          "type": "agent.observation",
+          "label": "Agent observed the page",
+          "payload": {
+            "observedRowOrder": [
+              "alice",
+              "beacon",
+              "cirrus"
+            ],
+            "requestedRecordId": "beacon",
+            "requestedName": "Beacon"
+          },
+          "agentStepId": "deactivate-beacon"
+        },
+        {
+          "sequence": 5,
+          "timestamp": "2026-10-29T03:26:58.390Z",
+          "source": "runner",
+          "type": "agent.observation_action_handoff",
+          "label": "Observation/action boundary",
+          "payload": {
+            "observedRowOrder": [
+              "alice",
+              "beacon",
+              "cirrus"
+            ]
+          },
+          "agentStepId": "deactivate-beacon"
+        },
+        {
+          "sequence": 6,
+          "timestamp": "2026-10-29T03:26:58.397Z",
+          "source": "runner",
+          "type": "fault.triggered",
+          "label": "Fault triggered",
+          "payload": {
+            "type": "dom_replace_after_observation",
+            "originalOrder": [
+              "alice",
+              "beacon",
+              "cirrus"
+            ],
+            "mutatedOrder": [
+              "beacon",
+              "alice",
+              "cirrus"
+            ],
+            "verified": true
+          },
+          "agentStepId": "deactivate-beacon"
+        },
+        {
+          "sequence": 7,
+          "timestamp": "2026-10-29T03:26:58.425Z",
+          "source": "runner",
+          "type": "agent.action_handoff_released",
+          "label": "Action released after mutation",
+          "payload": {
+            "domOrderAtRelease": [
+              "beacon",
+              "alice",
+              "cirrus"
+            ]
+          },
+          "agentStepId": "deactivate-beacon"
+        },
+        {
+          "sequence": 8,
+          "timestamp": "2026-10-29T03:26:58.428Z",
+          "source": "agent",
+          "type": "agent.action_proposed",
+          "label": "Agent chose an action",
+          "payload": {
+            "action": "deactivate_record",
+            "requestedRecordId": "beacon",
+            "strategy": "vulnerable"
+          },
+          "agentStepId": "deactivate-beacon",
+          "actionId": "1e28322c-e1c4-4a0a-bc80-521558b88001"
+        },
+        {
+          "sequence": 9,
+          "timestamp": "2026-10-29T03:26:58.428Z",
+          "source": "browser",
+          "type": "browser.click_attempt",
+          "label": "Browser clicked",
+          "payload": {
+            "role": "button",
+            "name": "Deactivate",
+            "selectedTarget": "alice",
+            "strategy": "vulnerable"
+          },
+          "agentStepId": "deactivate-beacon",
+          "actionId": "1e28322c-e1c4-4a0a-bc80-521558b88001"
+        },
+        {
+          "sequence": 10,
+          "timestamp": "2026-10-29T03:26:58.452Z",
+          "source": "browser",
+          "type": "network.request",
+          "label": "Request sent",
+          "payload": {
+            "method": "POST"
+          },
+          "actionId": "1e28322c-e1c4-4a0a-bc80-521558b88001",
+          "requestId": "af09b1c4-b284-4e97-8193-dba4ab83ac17",
+          "effectId": "e1240a2b-1939-488f-927e-0fd44eab843f"
+        },
+        {
+          "sequence": 11,
+          "timestamp": "2026-10-29T03:26:58.456Z",
+          "source": "observer",
+          "type": "backend.update_committed",
+          "label": "Backend update confirmed",
+          "payload": {
+            "effectId": "e1240a2b-1939-488f-927e-0fd44eab843f",
+            "entityId": "alice",
+            "newStatus": "inactive"
+          },
+          "actionId": "1e28322c-e1c4-4a0a-bc80-521558b88001",
+          "requestId": "af09b1c4-b284-4e97-8193-dba4ab83ac17",
+          "effectId": "e1240a2b-1939-488f-927e-0fd44eab843f"
+        },
+        {
+          "sequence": 12,
+          "timestamp": "2026-10-29T03:26:58.456Z",
+          "source": "runner",
+          "type": "network.upstream_response",
+          "label": "network upstream_response",
+          "payload": {},
+          "actionId": "1e28322c-e1c4-4a0a-bc80-521558b88001",
+          "requestId": "af09b1c4-b284-4e97-8193-dba4ab83ac17",
+          "effectId": "e1240a2b-1939-488f-927e-0fd44eab843f"
+        },
+        {
+          "sequence": 13,
+          "timestamp": "2026-10-29T03:26:58.457Z",
+          "source": "browser",
+          "type": "network.response_delivered",
+          "label": "Response delivered",
+          "payload": {},
+          "actionId": "1e28322c-e1c4-4a0a-bc80-521558b88001",
+          "requestId": "af09b1c4-b284-4e97-8193-dba4ab83ac17",
+          "effectId": "e1240a2b-1939-488f-927e-0fd44eab843f"
+        },
+        {
+          "sequence": 14,
+          "timestamp": "2026-10-29T03:26:58.536Z",
+          "source": "agent",
+          "type": "agent.result_observation",
+          "label": "Agent observed the result",
+          "payload": {
+            "visibleOutcome": "Record updated successfully",
+            "successConfirmation": true
+          },
+          "agentStepId": "deactivate-beacon",
+          "actionId": "1e28322c-e1c4-4a0a-bc80-521558b88001"
+        },
+        {
+          "sequence": 15,
+          "timestamp": "2026-10-29T03:26:58.568Z",
+          "source": "observer",
+          "type": "backend.effects_observed",
+          "label": "backend effects_observed",
+          "payload": {
+            "count": 1
+          },
+          "actionId": "1e28322c-e1c4-4a0a-bc80-521558b88001"
+        },
+        {
+          "sequence": 16,
+          "timestamp": "2026-10-29T03:26:58.568Z",
+          "source": "observer",
+          "type": "backend.state_observed",
+          "label": "backend state_observed",
+          "payload": {},
+          "actionId": "1e28322c-e1c4-4a0a-bc80-521558b88001"
+        },
+        {
+          "sequence": 17,
+          "timestamp": "2026-10-29T03:26:58.568Z",
+          "source": "contract",
+          "type": "contract.evaluated",
+          "label": "Contract evaluated",
+          "payload": {
+            "name": "update-correct-record",
+            "observedCount": 1,
+            "newStatus": "inactive",
+            "passed": false,
+            "signature": "update-correct-record|beacon|wrong-target:alice"
+          },
+          "actionId": "1e28322c-e1c4-4a0a-bc80-521558b88001"
+        },
+        {
+          "sequence": 18,
+          "timestamp": "2026-10-29T03:26:58.584Z",
+          "source": "runner",
+          "type": "run.completed",
+          "label": "Run completed",
+          "payload": {}
+        }
+      ],
+      "screenshots": [
+        {
+          "src": "/demo/screenshots/adminbench-vulnerable-before-observation.png",
+          "alt": "Stale row selection updated Alice — before observation"
+        },
+        {
+          "src": "/demo/screenshots/adminbench-vulnerable-after-fault-before-action.png",
+          "alt": "Stale row selection updated Alice — after fault before action"
+        },
+        {
+          "src": "/demo/screenshots/adminbench-vulnerable-after-committed-action.png",
+          "alt": "Stale row selection updated Alice — after committed action"
+        }
+      ],
+      "evidenceFiles": {
+        "scenario": "/demo/evidence/adminbench-vulnerable/scenario.json",
+        "schedule": "/demo/evidence/adminbench-vulnerable/schedule.json",
+        "effects": "/demo/evidence/adminbench-vulnerable/effects.json",
+        "result": "/demo/evidence/adminbench-vulnerable/result.json",
+        "events": "/demo/evidence/adminbench-vulnerable/events.jsonl"
+      }
+    },
+    {
+      "id": "adminbench-hardened",
+      "title": "Stable record ID updated Beacon",
+      "scenarioId": "adminbench-deactivate-beacon-v1",
+      "sourceRunId": "e9397bfb-096d-4fd2-bb15-06cf50307e92",
+      "agent": "hardened-stable-id",
+      "mode": "faulted",
+      "faultType": "dom_replace_after_observation",
+      "scheduleId": "adminbench-dom-day3-regression-v1",
+      "status": "passed",
+      "observerStatus": "complete",
+      "requestedEntity": "beacon",
+      "effects": [
+        {
+          "effectId": "354247dc-6a9d-4fee-b1b7-50c1f282acc5",
+          "entityId": "beacon",
+          "kind": "record_update",
+          "committedAt": "2026-10-29T03:26:58.861Z",
+          "actionId": "6f4ae08a-7e86-48c8-9527-6ffeae96c673",
+          "requestId": "184e22e5-9b80-4f49-98ed-15e1d8d55b37"
+        }
+      ],
+      "finalState": [
+        {
+          "entityId": "alice",
+          "status": "active"
+        },
+        {
+          "entityId": "beacon",
+          "status": "inactive"
+        },
+        {
+          "entityId": "cirrus",
+          "status": "active"
+        }
+      ],
+      "contract": {
+        "name": "update-correct-record",
+        "passed": true,
+        "signature": null,
+        "observedCount": 1
+      },
+      "timeline": [
+        {
+          "sequence": 1,
+          "timestamp": "2026-10-29T03:26:58.585Z",
+          "source": "runner",
+          "type": "run.started",
+          "label": "run started",
+          "payload": {}
+        },
+        {
+          "sequence": 2,
+          "timestamp": "2026-10-29T03:26:58.587Z",
+          "source": "runner",
+          "type": "backend.reset",
+          "label": "backend reset",
+          "payload": {}
+        },
+        {
+          "sequence": 3,
+          "timestamp": "2026-10-29T03:26:58.767Z",
+          "source": "runner",
+          "type": "fault.armed",
+          "label": "Fault armed",
+          "payload": {
+            "type": "dom_replace_after_observation",
+            "armed": true,
+            "trigger": "after_agent_observation_before_next_click",
+            "count": 1
+          }
+        },
+        {
+          "sequence": 4,
+          "timestamp": "2026-10-29T03:26:58.796Z",
+          "source": "agent",
+          "type": "agent.observation",
+          "label": "Agent observed the page",
+          "payload": {
+            "observedRowOrder": [
+              "alice",
+              "beacon",
+              "cirrus"
+            ],
+            "requestedRecordId": "beacon",
+            "requestedName": "Beacon"
+          },
+          "agentStepId": "deactivate-beacon"
+        },
+        {
+          "sequence": 5,
+          "timestamp": "2026-10-29T03:26:58.796Z",
+          "source": "runner",
+          "type": "agent.observation_action_handoff",
+          "label": "Observation/action boundary",
+          "payload": {
+            "observedRowOrder": [
+              "alice",
+              "beacon",
+              "cirrus"
+            ]
+          },
+          "agentStepId": "deactivate-beacon"
+        },
+        {
+          "sequence": 6,
+          "timestamp": "2026-10-29T03:26:58.800Z",
+          "source": "runner",
+          "type": "fault.triggered",
+          "label": "Fault triggered",
+          "payload": {
+            "type": "dom_replace_after_observation",
+            "originalOrder": [
+              "alice",
+              "beacon",
+              "cirrus"
+            ],
+            "mutatedOrder": [
+              "beacon",
+              "alice",
+              "cirrus"
+            ],
+            "verified": true
+          },
+          "agentStepId": "deactivate-beacon"
+        },
+        {
+          "sequence": 7,
+          "timestamp": "2026-10-29T03:26:58.831Z",
+          "source": "runner",
+          "type": "agent.action_handoff_released",
+          "label": "Action released after mutation",
+          "payload": {
+            "domOrderAtRelease": [
+              "beacon",
+              "alice",
+              "cirrus"
+            ]
+          },
+          "agentStepId": "deactivate-beacon"
+        },
+        {
+          "sequence": 8,
+          "timestamp": "2026-10-29T03:26:58.834Z",
+          "source": "agent",
+          "type": "agent.action_proposed",
+          "label": "Agent chose an action",
+          "payload": {
+            "action": "deactivate_record",
+            "requestedRecordId": "beacon",
+            "strategy": "hardened"
+          },
+          "agentStepId": "deactivate-beacon",
+          "actionId": "6f4ae08a-7e86-48c8-9527-6ffeae96c673"
+        },
+        {
+          "sequence": 9,
+          "timestamp": "2026-10-29T03:26:58.834Z",
+          "source": "browser",
+          "type": "browser.click_attempt",
+          "label": "Browser clicked",
+          "payload": {
+            "role": "button",
+            "name": "Deactivate",
+            "selectedTarget": "beacon",
+            "strategy": "hardened"
+          },
+          "agentStepId": "deactivate-beacon",
+          "actionId": "6f4ae08a-7e86-48c8-9527-6ffeae96c673"
+        },
+        {
+          "sequence": 10,
+          "timestamp": "2026-10-29T03:26:58.859Z",
+          "source": "browser",
+          "type": "network.request",
+          "label": "Request sent",
+          "payload": {
+            "method": "POST"
+          },
+          "actionId": "6f4ae08a-7e86-48c8-9527-6ffeae96c673",
+          "requestId": "184e22e5-9b80-4f49-98ed-15e1d8d55b37",
+          "effectId": "354247dc-6a9d-4fee-b1b7-50c1f282acc5"
+        },
+        {
+          "sequence": 11,
+          "timestamp": "2026-10-29T03:26:58.862Z",
+          "source": "observer",
+          "type": "backend.update_committed",
+          "label": "Backend update confirmed",
+          "payload": {
+            "effectId": "354247dc-6a9d-4fee-b1b7-50c1f282acc5",
+            "entityId": "beacon",
+            "newStatus": "inactive"
+          },
+          "actionId": "6f4ae08a-7e86-48c8-9527-6ffeae96c673",
+          "requestId": "184e22e5-9b80-4f49-98ed-15e1d8d55b37",
+          "effectId": "354247dc-6a9d-4fee-b1b7-50c1f282acc5"
+        },
+        {
+          "sequence": 12,
+          "timestamp": "2026-10-29T03:26:58.862Z",
+          "source": "runner",
+          "type": "network.upstream_response",
+          "label": "network upstream_response",
+          "payload": {},
+          "actionId": "6f4ae08a-7e86-48c8-9527-6ffeae96c673",
+          "requestId": "184e22e5-9b80-4f49-98ed-15e1d8d55b37",
+          "effectId": "354247dc-6a9d-4fee-b1b7-50c1f282acc5"
+        },
+        {
+          "sequence": 13,
+          "timestamp": "2026-10-29T03:26:58.862Z",
+          "source": "browser",
+          "type": "network.response_delivered",
+          "label": "Response delivered",
+          "payload": {},
+          "actionId": "6f4ae08a-7e86-48c8-9527-6ffeae96c673",
+          "requestId": "184e22e5-9b80-4f49-98ed-15e1d8d55b37",
+          "effectId": "354247dc-6a9d-4fee-b1b7-50c1f282acc5"
+        },
+        {
+          "sequence": 14,
+          "timestamp": "2026-10-29T03:26:58.944Z",
+          "source": "agent",
+          "type": "agent.result_observation",
+          "label": "Agent observed the result",
+          "payload": {
+            "visibleOutcome": "Record updated successfully",
+            "successConfirmation": true
+          },
+          "agentStepId": "deactivate-beacon",
+          "actionId": "6f4ae08a-7e86-48c8-9527-6ffeae96c673"
+        },
+        {
+          "sequence": 15,
+          "timestamp": "2026-10-29T03:26:58.974Z",
+          "source": "observer",
+          "type": "backend.effects_observed",
+          "label": "backend effects_observed",
+          "payload": {
+            "count": 1
+          },
+          "actionId": "6f4ae08a-7e86-48c8-9527-6ffeae96c673"
+        },
+        {
+          "sequence": 16,
+          "timestamp": "2026-10-29T03:26:58.974Z",
+          "source": "observer",
+          "type": "backend.state_observed",
+          "label": "backend state_observed",
+          "payload": {},
+          "actionId": "6f4ae08a-7e86-48c8-9527-6ffeae96c673"
+        },
+        {
+          "sequence": 17,
+          "timestamp": "2026-10-29T03:26:58.975Z",
+          "source": "contract",
+          "type": "contract.evaluated",
+          "label": "Contract evaluated",
+          "payload": {
+            "name": "update-correct-record",
+            "observedCount": 1,
+            "newStatus": "inactive",
+            "passed": true
+          },
+          "actionId": "6f4ae08a-7e86-48c8-9527-6ffeae96c673"
+        },
+        {
+          "sequence": 18,
+          "timestamp": "2026-10-29T03:26:58.988Z",
+          "source": "runner",
+          "type": "run.completed",
+          "label": "Run completed",
+          "payload": {}
+        }
+      ],
+      "screenshots": [
+        {
+          "src": "/demo/screenshots/adminbench-hardened-before-observation.png",
+          "alt": "Stable record ID updated Beacon — before observation"
+        },
+        {
+          "src": "/demo/screenshots/adminbench-hardened-after-fault-before-action.png",
+          "alt": "Stable record ID updated Beacon — after fault before action"
+        },
+        {
+          "src": "/demo/screenshots/adminbench-hardened-after-committed-action.png",
+          "alt": "Stable record ID updated Beacon — after committed action"
+        }
+      ],
+      "evidenceFiles": {
+        "scenario": "/demo/evidence/adminbench-hardened/scenario.json",
+        "schedule": "/demo/evidence/adminbench-hardened/schedule.json",
+        "effects": "/demo/evidence/adminbench-hardened/effects.json",
+        "result": "/demo/evidence/adminbench-hardened/result.json",
+        "events": "/demo/evidence/adminbench-hardened/events.jsonl"
+      }
+    }
+  ]
+}

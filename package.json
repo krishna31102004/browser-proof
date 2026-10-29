@@ -5,13 +5,21 @@
   "scripts": {
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "bp": "tsx packages/runner/src/cli.ts"
+    "bp": "tsx packages/runner/src/cli.ts",
+    "viewer:build": "pnpm --filter @browserproof/viewer build",
+    "viewer:smoke": "pnpm --filter @browserproof/viewer smoke"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/react": "19",
+    "@types/react-dom": "19",
+    "@vitejs/plugin-react": "4",
     "playwright": "^1.56.1",
+    "react": "19",
+    "react-dom": "19",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
+    "vite": "6",
     "vitest": "^2.1.8"
   }
 }

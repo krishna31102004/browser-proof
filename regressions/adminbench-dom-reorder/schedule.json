@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1.0.0",
+  "scheduleId": "adminbench-dom-day3-regression-v1",
+  "type": "dom_replace_after_observation",
+  "target": { "app": "adminbench", "list": "records", "recordId": "beacon" },
+  "scope": "browser-dom",
+  "trigger": "after_agent_observation_before_next_click",
+  "occurrenceCount": 1,
+  "originalOrder": ["alice", "beacon", "cirrus"],
+  "mutatedOrder": ["beacon", "alice", "cirrus"],
+  "seed": "day3-regression-v1"
+}

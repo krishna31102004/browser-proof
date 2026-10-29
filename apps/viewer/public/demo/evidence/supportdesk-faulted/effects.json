@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "1.0.0",
+  "runId": "37f00d93-78eb-4d1b-8fa3-c3fe10605218",
+  "observerStatus": "complete",
+  "effects": [
+    {
+      "effectId": "cd14fe36-cb93-4618-8f13-5f20e647d4c6",
+      "runId": "37f00d93-78eb-4d1b-8fa3-c3fe10605218",
+      "actionId": "6b750d36-3959-443a-9ccd-f5a7e405d081",
+      "requestId": "99117f45-d14b-4b59-b9ab-88b1a2a99f4c",
+      "kind": "refund",
+      "entityType": "order",
+      "entityId": "A123",
+      "amount": 42.5,
+      "committedAt": "2026-10-29T03:26:56.458Z"
+    },
+    {
+      "effectId": "b58ae3eb-05f9-4735-bd93-11d69ac9e446",
+      "runId": "37f00d93-78eb-4d1b-8fa3-c3fe10605218",
+      "actionId": "f1401f47-1322-42f9-9b8e-82615be9b805",
+      "requestId": "e3f0d9ff-ac6e-4341-a042-eb28f6dde25a",
+      "kind": "refund",
+      "entityType": "order",
+      "entityId": "A123",
+      "amount": 42.5,
+      "committedAt": "2026-10-29T03:26:57.696Z"
+    }
+  ]
+}

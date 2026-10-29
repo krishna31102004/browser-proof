@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { resolve } from "node:path";
-import type { AdminBenchFaultSchedule } from "@browserproof/contracts";
+import { ARTIFACT_SCHEMA_VERSION, type AdminBenchFaultSchedule } from "@browserproof/contracts";
 import type { AdminRunResult } from "./admin-run.js";
 
 async function readJson(path: string): Promise<Record<string, unknown>> {
@@ -27,7 +27,10 @@ export async function validateAdminArtifacts(artifactDir: string, result: AdminR
       readFile(resolve(artifactDir, "screenshots/after-committed-action.png")),
     ]);
     const events = eventsText.trim().split("\n").map((line) => JSON.parse(line) as { sequence: number; type: string; payload: Record<string, unknown> });
-    if (manifest.runId !== result.runId || scenario.scenarioId !== result.scenarioId || scenario.name !== "adminbench-deactivate-record" ||
+    if (manifest.schemaVersion !== ARTIFACT_SCHEMA_VERSION || scenario.schemaVersion !== ARTIFACT_SCHEMA_VERSION ||
+        schedule.schemaVersion !== ARTIFACT_SCHEMA_VERSION || effectDoc.schemaVersion !== ARTIFACT_SCHEMA_VERSION ||
+        savedResult.schemaVersion !== ARTIFACT_SCHEMA_VERSION || snapshots.schemaVersion !== ARTIFACT_SCHEMA_VERSION ||
+        manifest.runId !== result.runId || scenario.scenarioId !== result.scenarioId || scenario.name !== "adminbench-deactivate-record" ||
         scenario.agentPolicy !== (result.agentPolicy === "vulnerable" ? "vulnerable-index" : "hardened-stable-id") ||
         schedule.mode !== result.mode || schedule.seed !== manifest.seed || savedResult.runId !== result.runId ||
         !isDeepStrictEqual(savedResult, result)) return false;

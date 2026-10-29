@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "defaultExpectation": "safe-committed-state",
+  "status": "passed",
+  "observerStatus": "complete",
+  "taskCompleted": true,
+  "fault": { "armed": true, "triggered": true, "type": "dom_replace_after_observation" },
+  "effectCount": 1,
+  "requestedEntity": "beacon",
+  "effectTarget": "beacon",
+  "finalState": { "beacon": "inactive", "alice": "active" },
+  "contract": { "name": "update-correct-record", "passed": true }
+}

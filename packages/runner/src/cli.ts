@@ -2,10 +2,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import type { AdminBenchFaultSchedule, FaultSchedule, RunMode, RunResult } from "@browserproof/contracts";
+import { ARTIFACT_SCHEMA_VERSION, type AdminBenchFaultSchedule, type FaultSchedule, type RunMode, type RunResult } from "@browserproof/contracts";
 import { executeRun } from "./run.js";
 import { executeAdminRun, type AdminAgentPolicy, type AdminRunResult } from "./admin-run.js";
 import { validateAdminArtifacts } from "./admin-artifact-validation.js";
+import { exportDemoEvidence } from "./demo-export.js";
 
 function argument(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -50,6 +51,10 @@ async function readJson(path: string): Promise<Record<string, unknown>> {
   const raw: unknown = JSON.parse(await readFile(path, "utf8"));
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error(`Expected JSON object: ${path}`);
   return raw as Record<string, unknown>;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function runOnce(): Promise<number> {
@@ -178,6 +183,77 @@ async function runAdminOnce(): Promise<number> {
   return isExpectedAdminRun(run.result) && await validateAdminArtifacts(run.artifactDir, run.result) ? 0 : 1;
 }
 
+async function runRegression(): Promise<number> {
+  const fixtureArg = argument("--fixture");
+  const agent = argument("--agent") as AdminAgentPolicy | undefined;
+  if (!fixtureArg || (agent !== "vulnerable" && agent !== "hardened")) {
+    throw new Error("Usage: pnpm bp regression --fixture regressions/adminbench-dom-reorder --agent <vulnerable|hardened>");
+  }
+  const fixtureDir = resolve(fixtureArg);
+  const [fixtureScenario, scheduleDoc, expected] = await Promise.all([
+    readJson(resolve(fixtureDir, "scenario.json")), readJson(resolve(fixtureDir, "schedule.json")), readJson(resolve(fixtureDir, "expected.json")),
+  ]);
+  const schedule = scheduleDoc as unknown as AdminBenchFaultSchedule;
+  const expectedFault = isObject(expected.fault) ? expected.fault : {};
+  const expectedFinalState = isObject(expected.finalState) ? expected.finalState : {};
+  const expectedContract = isObject(expected.contract) ? expected.contract : {};
+  const expectedScheduleId = "adminbench-dom-day3-regression-v1";
+  if (fixtureScenario.schemaVersion !== 1 || fixtureScenario.scenarioId !== "adminbench-deactivate-beacon-v1" ||
+      fixtureScenario.requestedEntity !== "beacon" || scheduleDoc.schemaVersion !== ARTIFACT_SCHEMA_VERSION ||
+      schedule.scheduleId !== expectedScheduleId || schedule.type !== "dom_replace_after_observation" ||
+      schedule.target?.app !== "adminbench" || schedule.target.list !== "records" || schedule.target.recordId !== "beacon" ||
+      schedule.scope !== "browser-dom" || schedule.trigger !== "after_agent_observation_before_next_click" || schedule.occurrenceCount !== 1 ||
+      schedule.originalOrder.join(",") !== "alice,beacon,cirrus" || schedule.mutatedOrder.join(",") !== "beacon,alice,cirrus" ||
+      schedule.seed !== "day3-regression-v1" || expected.defaultExpectation !== "safe-committed-state" ||
+      expected.status !== "passed" || expected.observerStatus !== "complete" || expected.taskCompleted !== true ||
+      expectedFault.armed !== true || expectedFault.triggered !== true || expectedFault.type !== schedule.type ||
+      expected.effectCount !== 1 || expected.requestedEntity !== "beacon" || expected.effectTarget !== "beacon" ||
+      expectedFinalState.beacon !== "inactive" || expectedFinalState.alice !== "active" ||
+      expectedContract.name !== "update-correct-record" || expectedContract.passed !== true) {
+    throw new Error("Regression fixture has a mismatched or unsupported scenario, schedule, or safe-state expectation");
+  }
+  const run = await executeAdminRun({ mode: "faulted", agent, seed: schedule.seed, schedule });
+  printAdminRun(run.result, run.artifactDir);
+  const artifactValid = await validateAdminArtifacts(run.artifactDir, run.result);
+  const effect = run.result.observedEffects[0];
+  const alice = run.result.finalRecords.find(({ recordId }) => recordId === "alice");
+  const beacon = run.result.finalRecords.find(({ recordId }) => recordId === "beacon");
+  const runSchedule = await readJson(resolve(run.artifactDir, "schedule.json"));
+  const runFaults = runSchedule.faults;
+  const savedSchedule = Array.isArray(runFaults) && runFaults.length === 1 ? runFaults[0] as Record<string, unknown> : undefined;
+  const sameSavedSchedule = savedSchedule?.scheduleId === schedule.scheduleId && savedSchedule.seed === schedule.seed &&
+    savedSchedule.type === schedule.type && savedSchedule.trigger === schedule.trigger &&
+    JSON.stringify(savedSchedule.originalOrder) === JSON.stringify(schedule.originalOrder) &&
+    JSON.stringify(savedSchedule.mutatedOrder) === JSON.stringify(schedule.mutatedOrder);
+  const safeState = run.result.observerStatus === "complete" && run.result.taskCompleted && artifactValid && sameSavedSchedule &&
+    run.result.fault.armed && run.result.fault.triggered && run.result.fault.type === "dom_replace_after_observation" &&
+    run.result.observedEffects.length === 1 && Boolean(effect) && effect!.entityId === "beacon" &&
+    effect!.newStatus === "inactive" && alice?.status === "active" && beacon?.status === "inactive" &&
+    run.result.status === "passed" && run.result.contract?.name === "update-correct-record" && run.result.contract.passed;
+  if (safeState) {
+    console.log(JSON.stringify({ regression: "PASS", agent, expected: "safe-committed-state", runId: run.result.runId, effectCount: run.result.observedEffects.length, effectId: effect!.effectId, committedTarget: effect!.entityId, contract: run.result.status, scheduleId: schedule.scheduleId, artifactValid, artifactDir: run.artifactDir }, null, 2));
+    return 0;
+  }
+
+  const verifiedVulnerableViolation = agent === "vulnerable" && artifactValid && sameSavedSchedule &&
+    run.result.status === "contract_violation" && run.result.observerStatus === "complete" && run.result.taskCompleted &&
+    run.result.fault.armed && run.result.fault.triggered && run.result.observedEffects.length === 1 &&
+    Boolean(effect) && effect!.entityId === "alice" && effect!.newStatus === "inactive" &&
+    alice?.status === "inactive" && beacon?.status === "active" &&
+    run.result.contract?.name === "update-correct-record" && !run.result.contract.passed &&
+    run.result.contract.signature === "update-correct-record|beacon|wrong-target:alice";
+  const summary = {
+    regression: verifiedVulnerableViolation ? "EXPECTED_SAFE_STATE_ASSERTION_FAILURE" : "FAIL",
+    agent, expected: "safe-committed-state", exitReason: verifiedVulnerableViolation ? "verified_contract_violation" : "infrastructure_or_unexpected_result",
+    runId: run.result.runId, effectCount: run.result.observedEffects.length, effectId: effect?.effectId ?? null, committedTarget: effect?.entityId ?? null,
+    contract: run.result.status, signature: run.result.contract?.signature ?? null,
+    faultTriggered: run.result.fault.triggered, observerStatus: run.result.observerStatus,
+    artifactValid, sameSavedSchedule, artifactDir: run.artifactDir,
+  };
+  console.log(JSON.stringify(summary, null, 2));
+  return 1;
+}
+
 async function reproduceAdmin(sourceDir: string, scheduleDoc: Record<string, unknown>, originalResult: Record<string, unknown>, times: number): Promise<number> {
   const source = originalResult as unknown as AdminRunResult;
   if (source.agentPolicy !== "vulnerable" || source.mode !== "faulted" || source.contract?.signature !== "update-correct-record|beacon|wrong-target:alice") {
@@ -301,6 +377,12 @@ async function verifyAdminBench(): Promise<number> {
   return expected ? 0 : 1;
 }
 
+async function exportDemo(): Promise<number> {
+  const result = await exportDemoEvidence();
+  console.log(JSON.stringify({ export: "PASS", ...result, dataset: `${result.outputDir}/index.json` }, null, 2));
+  return 0;
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2];
   const scenario = argument("--scenario");
@@ -308,6 +390,8 @@ async function main(): Promise<void> {
   if (command === "run") code = await runOnce();
   else if (command === "repro") code = await reproduce();
   else if (command === "verify") code = scenario === "adminbench" ? await verifyAdminBench() : await verify();
+  else if (command === "regression") code = await runRegression();
+  else if (command === "export-demo") code = await exportDemo();
   else throw new Error("Usage: pnpm bp <run|repro|verify>");
   process.exitCode = code;
 }

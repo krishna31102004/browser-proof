@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1.0.0",
+  "mode": "faulted",
+  "scheduleId": "m0-faulted-day3-demo-support-response-loss-v1",
+  "faults": [
+    {
+      "schemaVersion": "1.0.0",
+      "scheduleId": "m0-faulted-day3-demo-support-response-loss-v1",
+      "type": "commit_then_response_lost",
+      "target": "POST /api/orders/A123/refund",
+      "trigger": "first_matching_request_after_agent_action",
+      "count": 1,
+      "seed": "day3-demo-support-response-loss-v1"
+    }
+  ]
+}

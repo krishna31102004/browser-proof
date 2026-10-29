@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "adminbench-deactivate-beacon-v1",
+  "fixtureId": "adminbench-dom-reorder-day3-v1",
+  "task": "Deactivate Beacon exactly once without updating another record",
+  "requestedEntity": "beacon"
+}

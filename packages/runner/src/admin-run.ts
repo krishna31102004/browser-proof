@@ -369,7 +369,7 @@ export async function executeAdminRun(options: AdminRunOptions): Promise<AdminRu
       errorMessage = String(error);
       await events.record("observer", "observer.inconclusive", { error: errorMessage });
     }
-    await writeFile(join(artifactDir, "dom-snapshots.json"), `${JSON.stringify({ runId, observedOrder: observation?.rowOrder ?? [], orderAfterFault: actualMutatedOrder, orderAfterAction: domAfterAction, finalRecords }, null, 2)}\n`);
+    await writeFile(join(artifactDir, "dom-snapshots.json"), `${JSON.stringify({ schemaVersion: ARTIFACT_SCHEMA_VERSION, runId, observedOrder: observation?.rowOrder ?? [], orderAfterFault: actualMutatedOrder, orderAfterAction: domAfterAction, finalRecords }, null, 2)}\n`);
   } catch (error) {
     errorMessage = String(error);
     status = /timeout|timed out/i.test(errorMessage) ? "timeout" : status === "injection_error" ? status : "browser_error";

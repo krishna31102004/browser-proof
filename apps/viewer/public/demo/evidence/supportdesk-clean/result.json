@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0.0",
+  "runId": "4ba90bea-b83d-4421-85c6-d054950a9a86",
+  "scenarioId": "supportdesk-refund-v1",
+  "status": "passed",
+  "taskCompleted": true,
+  "observerStatus": "complete",
+  "contract": {
+    "name": "refund-at-most-once",
+    "entityId": "A123",
+    "observedCount": 1,
+    "limit": 1,
+    "passed": true
+  }
+}

@@ -54,7 +54,7 @@ const supportDeskHtml = `<!doctype html>
       <section aria-labelledby="order-heading">
         <h2 id="order-heading">Order A123</h2>
         <dl>
-          <dt>Customer</dt><dd>Alex Morgan</dd>
+          <dt>Customer</dt><dd>Demo customer</dd>
           <dt>Status</dt><dd id="order-status" data-testid="order-status">Loading order…</dd>
           <dt>Refund amount</dt><dd>$42.50</dd>
         </dl>
