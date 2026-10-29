@@ -10,6 +10,10 @@ The local demonstrations use synthetic SupportDesk and AdminBench data. They mak
 
 The public Vercel site serves five curated records from genuine local Playwright runs. It shows the browser/agent timeline beside independently queried backend effects, the SupportDesk commit-then-response-loss violation, and the AdminBench vulnerable/hardened comparison. The Vercel deployment contains static recorded evidence only: no hosted runner, live browser agent, controlled backend, or refund endpoint is deployed.
 
+Start with the overview: it tells the verified refund incident in one sentence, then lets you select the recorded commit, browser failure, retry, second commit, and contract result. Each step opens its source event. Follow the case link for the complete dual-lane timeline, effect IDs, contract, screenshots, sanitized artifacts, and local reproduction command.
+
+![BrowserProof overview showing the recorded refund failure and independently confirmed effects](docs/images/browserproof-overview-prompt06.png)
+
 To verify the public deployment and all published evidence assets from a local checkout:
 
 ```bash

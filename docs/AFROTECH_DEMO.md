@@ -9,10 +9,10 @@ This is static playback of five curated records from genuine local Playwright ru
 
 | Time | Show | Say |
 | --- | --- | --- |
-| 0–15 sec | Open the public URL and point to the two timeline lanes. | “The left lane is what the browser and agent observed. The right lane is what the independent backend ledger confirmed.” |
-| 15–30 sec | Show the faulted SupportDesk case: commit, dropped response, retry, second commit. | “The first refund committed before the browser saw failure. The same agent retried once, producing a second distinct refund. The at-most-once contract catches it.” |
-| 30–45 sec | Open **Compare agents** and point to the matching schedule IDs and committed targets. | “Both agents received the same saved DOM reorder. The vulnerable policy updated Alice; the hardened policy resolved Beacon by stable ID.” |
-| 45–60 sec | Open the [verified `BrowserProof regression` run](https://github.com/krishna31102004/browser-proof/actions/runs/40833167948) on commit `0c94ba99caf1b04c39702d3fa065bb2cd8862209`, then show the hardened command. | “CI checks the safe behavior. The vulnerable command is an expected negative control: it exits 1 only when the ledger confirms the wrong Alice update.” |
+| 0–12 sec | Open the overview and point to “One failure. Two refunds committed.” Select the first event in the dark incident rail. | “BrowserProof tests browser agents under controlled failures. This recorded run shows why the browser’s error message can hide a completed backend action.” |
+| 12–30 sec | Open the full SupportDesk case. Point to sequence 8 ledger commit, sequence 11 browser failure, sequence 13 retry, sequence 17 second commit, and sequence 22 contract result. | “The first refund committed before the browser saw failure. The same agent retried once, producing a second distinct refund. An independent ledger confirms both effects; the at-most-once contract catches the duplicate.” |
+| 30–45 sec | Open **Compare agents**. Point to the shared schedule and the Alice versus Beacon ledger targets. | “Both agents received the same saved DOM reorder. The vulnerable policy updated Alice; the hardened policy resolved Beacon by stable ID.” |
+| 45–60 sec | Open the [GitHub Actions workflow history](https://github.com/krishna31102004/browser-proof/actions/workflows/browserproof.yml) for the current commit, then show the hardened command. | “CI checks the safe behavior. The vulnerable command is an expected negative control: it exits 1 only when the ledger confirms the wrong Alice update.” |
 
 ## Exact reproduction commands
 
@@ -42,7 +42,7 @@ pnpm run viewer:smoke:remote -- --url https://browserproof.vercel.app
 
 ## Offline fallback
 
-The viewer and five sanitized records are checked into the repository. With Node 22, pnpm 9.12.1 and Playwright Chromium installed, run:
+The viewer and five sanitized records are checked into the repository. Current desktop, tablet, and phone screenshots from the latest UI review are under `apps/viewer/.visual-review/prompt06-final/local/` on the verification machine. With Node 22, pnpm 9.12.1 and Playwright Chromium installed, run:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -51,4 +51,4 @@ pnpm viewer:build
 pnpm --filter @browserproof/viewer preview
 ```
 
-Open the local Vite Preview address printed in the terminal. This serves the same static evidence bundle; it is not a live agent run. A previously captured remote overview screenshot is also available at `apps/viewer/.visual-review/remote-browserproof.vercel.app/overview-desktop-1440x900.png` on the verification machine.
+Open the local Vite Preview address printed in the terminal. This serves the same static evidence bundle; it is not a live agent run.

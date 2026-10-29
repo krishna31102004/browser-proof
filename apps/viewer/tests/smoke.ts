@@ -37,42 +37,30 @@ try {
     { name: "mobile-390x844", width: 390, height: 844 },
     { name: "mobile-360x780", width: 360, height: 780 },
   ];
-  const routeCaptures: Array<{ name: string; path: string; viewport: (typeof viewports)[number] }> = [];
-  for (const viewport of viewports) routeCaptures.push({ name: `overview-${viewport.name}`, path: "/", viewport });
-  routeCaptures.push(
-    { name: `supportdesk-${viewports[0]!.name}`, path: `/#/case/${encodeURIComponent(refund.id)}`, viewport: viewports[0]! },
-    { name: `supportdesk-${viewports[3]!.name}`, path: `/#/case/${encodeURIComponent(refund.id)}`, viewport: viewports[3]! },
-    { name: `supportdesk-${viewports[4]!.name}`, path: `/#/case/${encodeURIComponent(refund.id)}`, viewport: viewports[4]! },
-    { name: `admin-vulnerable-${viewports[0]!.name}`, path: `/#/case/${encodeURIComponent(vulnerable.id)}`, viewport: viewports[0]! },
-    { name: `admin-vulnerable-${viewports[3]!.name}`, path: `/#/case/${encodeURIComponent(vulnerable.id)}`, viewport: viewports[3]! },
-    { name: `admin-hardened-${viewports[0]!.name}`, path: `/#/case/${encodeURIComponent(hardened.id)}`, viewport: viewports[0]! },
-    { name: `comparison-${viewports[0]!.name}`, path: "/#/compare", viewport: viewports[0]! },
-    { name: `comparison-${viewports[3]!.name}`, path: "/#/compare", viewport: viewports[3]! },
-  );
+  const routes = [
+    { name: "overview", path: "/", check: async () => assertOverview(page) },
+    { name: "supportdesk", path: `/case/${encodeURIComponent(refund.id)}`, check: async () => assertRefund(page, refund) },
+    { name: "admin-vulnerable", path: `/case/${encodeURIComponent(vulnerable.id)}`, check: async () => assertAdmin(page, vulnerable, "alice", false) },
+    { name: "admin-hardened", path: `/case/${encodeURIComponent(hardened.id)}`, check: async () => assertAdmin(page, hardened, "beacon", true) },
+    { name: "comparison", path: "/compare", check: async () => assertComparison(page, vulnerable, hardened) },
+  ];
+  const routeCaptures = routes.flatMap((route) => viewports.map((viewport) => ({ ...route, name: `${route.name}-${viewport.name}`, viewport })));
 
-  const overview = routeCaptures[0]!;
-  await page.setViewportSize(overview.viewport);
-  const response = await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-  assert.equal(response?.status(), 200, "production dist is served with HTTP 200");
-  await assertOverview(page);
-  await saveScreenshots(page, overview.name);
-
-  for (const capture of routeCaptures.slice(1)) {
+  for (const [index, capture] of routeCaptures.entries()) {
     await page.setViewportSize(capture.viewport);
-    const routeHash = new URL(capture.path, baseUrl).hash;
-    await page.evaluate((hash) => { window.location.hash = hash; }, routeHash);
+    const response = await page.goto(`${baseUrl}/#${capture.path}`, { waitUntil: "domcontentloaded" });
+    if (index === 0) assert.equal(response?.status(), 200, "production dist is served with HTTP 200");
     await page.locator("main").waitFor({ state: "visible" });
     assert.ok((await page.locator("#root").innerText()).trim().length > 0, `${capture.path} renders the static application shell`);
-    if (capture.path === "/") await page.getByRole("heading", { level: 1, name: /agent saw a failure/i }).waitFor();
-    if (capture.path.includes("/case/")) await page.getByRole("heading", { level: 1 }).waitFor();
-    if (capture.path.endsWith("/compare")) await assertComparison(page, vulnerable, hardened);
-    if (capture.name.startsWith("supportdesk")) await assertRefund(page, refund);
-    if (capture.name.startsWith("admin-vulnerable")) await assertAdmin(page, vulnerable, "alice", false);
-    if (capture.name.startsWith("admin-hardened")) await assertAdmin(page, hardened, "beacon", true);
+    await capture.check();
     await assertResponsive(page, capture.viewport.width);
     await saveScreenshots(page, capture.name);
   }
 
+  await page.goto(`${baseUrl}/#/`, { waitUntil: "domcontentloaded" });
+  await verifyRefundStory(page, refund);
+  await verifyMobileEvidenceDetails(page, refund);
+  await page.setViewportSize(viewports[0]!);
   await page.goto(`${baseUrl}/#/case/${encodeURIComponent(refund.id)}`, { waitUntil: "domcontentloaded" });
   const networkFilter = page.getByRole("button", { name: "Network", exact: true });
   await networkFilter.click();
@@ -118,16 +106,74 @@ try {
 }
 
 async function assertOverview(page: Page) {
-  await page.getByRole("heading", { level: 1, name: /agent saw a failure/i }).waitFor();
+  await page.getByRole("heading", { level: 1, name: /one failure.*two refunds committed/i }).waitFor();
+  await page.getByText(/static evidence from genuine local Playwright runs/i).waitFor();
   assert.ok(await page.locator(".case-row").count() >= 5, "overview lists the actual exported cases");
-  await page.getByText("Recorded local executions", { exact: true }).waitFor();
-  await page.locator(".case-row").first().click();
-  await page.getByRole("heading", { level: 1 }).waitFor();
-  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await page.getByRole("region", { name: "Featured SupportDesk response-loss incident" }).waitFor();
+  const story = page.getByRole("region", { name: "Refund response-loss story" });
+  assert.equal(await story.getByRole("button").count(), 5, "landing story presents its five recorded causal events");
+  await story.getByText("Browser / agent", { exact: true }).first().waitFor();
+  await story.getByText("Independent ledger", { exact: true }).first().waitFor();
+  await page.getByText("source-backed cases", { exact: true }).waitFor();
+  await page.getByText("verified fault types", { exact: true }).waitFor();
+  await page.getByText(/Every committed effect comes from the controlled backend observer/i).waitFor();
   await assertNoMisleadingActions(page);
 }
 
+async function verifyRefundStory(page: Page, item: NonNullable<typeof refund>) {
+  const story = page.getByRole("region", { name: "Refund response-loss story" });
+  const firstCommit = item.timeline.find((event) => event.type === "backend.commit_confirmed");
+  assert.ok(firstCommit, "source data includes the first independent commit");
+  const firstStep = story.getByRole("button", { name: new RegExp(`Sequence ${firstCommit.sequence}:`) });
+  await firstStep.focus();
+  await page.keyboard.press("Enter");
+  assert.equal(await firstStep.getAttribute("aria-pressed"), "true", "selecting a causal step updates its pressed state");
+  const inspector = page.getByRole("complementary", { name: "Selected event details" });
+  await inspector.getByText(firstCommit.type, { exact: true }).waitFor();
+  if (firstCommit.effectId) await inspector.getByText(firstCommit.effectId, { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Close event details" }).click();
+  await page.getByRole("link", { name: /Explore the recorded incident/i }).click();
+  await page.waitForURL(/#\/case\//);
+  await page.getByRole("heading", { level: 1 }).waitFor();
+}
+
+async function verifyMobileEvidenceDetails(page: Page, item: NonNullable<typeof refund>) {
+  const event = item.timeline[0];
+  assert.ok(event, "refund source contains a timestamped event");
+  for (const viewport of [{ width: 390, height: 844 }, { width: 360, height: 780 }]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`${baseUrl}/#/case/${encodeURIComponent(item.id)}`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("heading", { level: 1, name: item.title }).waitFor();
+    const time = page.locator(".sequence-cell time").first();
+    const details = await time.evaluate((element) => {
+      const mobile = element.querySelector<HTMLElement>(".time-mobile");
+      const nav = document.querySelector<HTMLElement>(".primary-nav a");
+      return {
+        visibleTime: mobile?.innerText.trim(),
+        mobileDisplay: mobile ? getComputedStyle(mobile).display : "missing",
+        exactTimestamp: element.getAttribute("dateTime"),
+        title: element.getAttribute("title"),
+        accessibleName: element.getAttribute("aria-label"),
+        navFontSize: nav ? Number.parseFloat(getComputedStyle(nav).fontSize) : 0,
+        navHeight: nav?.getBoundingClientRect().height ?? 0,
+      };
+    });
+    assert.match(details.visibleTime ?? "", /^\d{2}:\d{2}$/, `compact timestamp is readable at ${viewport.width}px`);
+    assert.notEqual(details.mobileDisplay, "none", `compact timestamp is displayed at ${viewport.width}px`);
+    assert.equal(details.exactTimestamp, event.timestamp, "time element preserves the exact source timestamp");
+    assert.equal(details.title, event.timestamp, "time tooltip preserves the exact source timestamp");
+    assert.ok(details.accessibleName?.includes(event.timestamp), "accessible time name contains the exact source timestamp");
+    assert.ok(details.navFontSize >= 11 && details.navHeight >= 44, `mobile navigation remains readable and touch-sized at ${viewport.width}px`);
+    await assertResponsive(page, viewport.width);
+  }
+}
+
 async function saveScreenshots(page: Page, name: string) {
+  await page.evaluate(() => document.fonts.ready);
+  await page.evaluate(() => { document.documentElement.style.scrollBehavior = "auto"; document.body.style.scrollBehavior = "auto"; window.scrollTo({ top: 0, behavior: "instant" }); });
+  const header = await page.locator(".topbar").boundingBox();
+  const heading = await page.locator("main h1").boundingBox();
+  assert.ok(header && heading && heading.y >= header.y + header.height && heading.y < (await page.evaluate(() => innerHeight)), `${name} screenshot begins at the route heading`);
   await page.screenshot({ path: `${screenshotDir}/${name}.png`, fullPage: false });
   if (name.includes("desktop-1440x900")) await page.screenshot({ path: `${screenshotDir}/${name}-full.png`, fullPage: true });
 }
@@ -151,10 +197,10 @@ async function assertAdmin(page: Page, item: NonNullable<typeof vulnerable>, ent
 }
 
 async function assertComparison(page: Page, left: NonNullable<typeof vulnerable>, right: NonNullable<typeof hardened>) {
-  await page.getByRole("heading", { level: 1, name: /one stale index/i }).waitFor();
+  await page.getByRole("heading", { level: 1, name: /same reorder.*different record updated/i }).waitFor();
   assert.equal(left.scheduleId, right.scheduleId);
   assert.ok(left.scheduleId);
-  await page.getByText("Schedule IDs match", { exact: true }).waitFor();
+  await page.getByText("Same saved schedule", { exact: true }).waitFor();
   assert.ok(await page.getByText(/alice/i).count() > 0, "comparison renders the vulnerable committed target");
   assert.ok(await page.getByText(/beacon/i).count() > 0, "comparison renders the hardened committed target");
   assert.equal(left.effects[0]?.entityId, "alice");
@@ -172,6 +218,8 @@ async function assertResponsive(page: Page, width: number) {
     for (const label of ["Overview", "SupportDesk", "AdminBench", "Compare agents"]) assert.ok(await nav.getByRole("link", { name: label, exact: true }).isVisible(), `mobile navigation item ${label} is visible at ${width}px`);
     const touchSize = await page.locator(".filter-chip").first().evaluate((element) => element.getBoundingClientRect().height).catch(() => 40);
     assert.ok(touchSize >= 38, `filter controls remain touch-sized at ${width}px`);
+    const storyStep = page.locator(".story-step").first();
+    if (await storyStep.count()) assert.ok(await storyStep.evaluate((element) => element.getBoundingClientRect().height >= 40), `story steps remain touch-sized at ${width}px`);
   }
 }
 
