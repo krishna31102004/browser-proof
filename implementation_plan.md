@@ -1,7 +1,7 @@
 # BrowserProof: Four-Day Recruiter-Ready Implementation Plan
 
 **Planning date:** 2026-10-28
-**Status:** M0, Day 2 AdminBench, Day 3 CI/evidence viewer, Day 4 public viewer deployment, and Prompt 06 recruiter-first redesign are verified. Prompt 07 has locally verified all three new network faults (5/10 total); its GitHub Actions run is pending publication.
+**Status:** M0, Day 2 AdminBench, Day 3 CI/evidence viewer, Day 4 public viewer deployment, Prompt 06 recruiter-first redesign, and Prompt 07 three-fault regression are verified. Prompt 07 passed local gates and GitHub Actions (5/10 fault types total).
 **Source of truth:** `BrowserProof_Complete_Project_Handoff.md` (locked product and technical thesis).
 **Execution record:** `CODEX_RUN_LOG.md` (observed results only).
 **Agent rules:** `AGENTS.md`.
@@ -30,7 +30,7 @@
 
 **Prompt 06 observed status (2026-10-29):** The public static viewer now leads with the real SupportDesk post-commit response-loss failure for recruiters, then exposes the five source-backed cases, dual browser/ledger evidence, and technical artifacts. The Evidence Journal direction scored 4.75/5 against the dark Signal Room alternative at 3.75/5. UI UX Pro Max, Impeccable, and Web Design Guidelines were read and applied; Impeccable reports one documented Instrument Sans warning. Local typecheck and production build pass, workspace tests pass 39/39, local browser smoke passes 25/25 responsive route/viewports, and M0/AdminBench gates were rerun successfully. Source commit `7821fe54e347514f2f031cdc973eef5f24999df3` is on `main` with a successful GitHub Actions run `40848432507`. The new static-only Vercel production deployment is `dpl_xhSrdpYJgZG4ph5n9YyCY8dEG9bp` at `https://browserproof.vercel.app`, in personal scope `krishna31102004s-projects`. Anonymous public smoke passed 5/5 cases and 25/25 route/viewports with no browser/network errors; all 48 deployed static files match the production Vercel build by SHA-256. Independent reviewer found no P0/P1/P2 implementation or visual issue. No additional backend feature or fault type was added. Stagehand, the remaining eight faults, the 36-case campaign, and a measured 90% detection rate remain unverified targets.
 
-**Prompt 07 local observed status (2026-10-29):** The new `response_delay`, `request_abort`, and `stale_api_response` Playwright scenarios each passed 3 clean + 3 faulted + 3 saved-schedule fresh-context trials with validated artifacts (9/9 per type; 27/27 total). The resulting verified count is 5/10 fault types. Full GitHub Actions verification is pending publication of the reviewed source. No public viewer file or Vercel deployment changed.
+**Prompt 07 observed status (2026-10-29):** The new `response_delay`, `request_abort`, and `stale_api_response` Playwright scenarios each passed 3 clean + 3 faulted + 3 saved-schedule fresh-context trials with validated artifacts (9/9 per type; 27/27 total). The resulting verified count is 5/10 fault types. Source commit `ba074380084cb4c58925bb5dcae9f23295a68023` passed GitHub Actions run `40859693164` on `main`; its `Local browser regressions and static viewer` job and `Run three-type real Chromium network-fault campaign` step completed successfully. No public viewer file or Vercel deployment changed.
 
 **Milestone scheduling:** M0 remains a standalone gate. M1-M3 are compressed into focused underlying primitives only after M0. Pull forward thin versions of M5, M6, M7 and M8 that serve the conference. Defer M4 minimizer/search; finish the full M5-M10 depth after the conference. Build with small verified prompts, not one giant unverified run.
 
@@ -86,7 +86,7 @@ Maintain a **resume claim evidence table** as development advances:
 | Desired claim | Evidence required | Current status |
 |---|---|---|
 | Reliability platform for browser agents | real runner + source code + tests | NOT YET VERIFIED |
-| 10 browser/network fault types | 10 real implementations + per-fault tests | PARTIALLY VERIFIED — 5/10 types; Prompt 07 local campaign passed, hosted CI pending |
+| 10 browser/network fault types | 10 real implementations + per-fault tests | PARTIALLY VERIFIED — 5/10 types; Prompt 07 local campaign and hosted CI passed |
 | Detects unsafe committed side effects | independent ledgers + typed contract failure | NOT YET VERIFIED |
 | 90% seeded-failure detection | frozen corpus, raw truth labels, calculation and denominator | NOT YET VERIFIED |
 | 36 controlled cases | fixture manifest with 12 clean + 24 seeded, executed | NOT YET VERIFIED |
