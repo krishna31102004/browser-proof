@@ -120,6 +120,47 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n## Prompt 07 network faults\n\n| Fault | Clean | Faulted | Fresh replay | Valid artifacts |\n|---|---:|---:|---:|---:|\n${rows}\n\nReport: \`artifacts/${path}\`\n`);
           if (report.allPassed !== true || report.results.length !== 3 || report.results.some((item) => item.passes !== 9)) process.exit(1);
           NODE
+      - name: Run three-type real Chromium browser-state campaign
+        shell: bash
+        run: |
+          mkdir -p ci-evidence
+          pnpm bp verify --scenario browser-faults | tee ci-evidence/browser-faults.log
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const name = fs.readdirSync('artifacts').filter((entry) => /^browser-faults-verification-.+\.json$/.test(entry)).sort().at(-1);
+          if (!name) throw new Error('Browser-state campaign report was not produced');
+          const report = JSON.parse(fs.readFileSync(`artifacts/${name}`, 'utf8'));
+          const required = ['delayed_render', 'session_expire', 'navigation_abort'];
+          const byFault = new Map(report.faults.map((row) => [row.fault, row]));
+          const cells = ['vulnerableClean', 'vulnerableFaulted', 'hardenedClean', 'hardenedFaulted', 'vulnerableFreshReproduction', 'hardenedFreshReproduction'];
+          const expectations = {
+            vulnerable_clean: (trial) => trial.mode === 'clean' && trial.agent === 'vulnerable' && trial.status === 'passed' && trial.taskCompleted === true && trial.faultArmed === false && trial.faultTriggered === false && trial.effectIds.length === 1,
+            vulnerable_faulted: (trial) => trial.mode === 'faulted' && trial.agent === 'vulnerable' && trial.status === 'agent_error' && trial.taskCompleted === false && trial.faultArmed === true && trial.faultTriggered === true && trial.effectIds.length === 0,
+            hardened_clean: (trial) => trial.mode === 'clean' && trial.agent === 'hardened' && trial.status === 'passed' && trial.taskCompleted === true && trial.faultArmed === false && trial.faultTriggered === false && trial.effectIds.length === 1,
+            hardened_faulted: (trial) => trial.mode === 'faulted' && trial.agent === 'hardened' && trial.status === 'passed' && trial.taskCompleted === true && trial.faultArmed === true && trial.faultTriggered === true && trial.effectIds.length === 1,
+            vulnerable_reproduction: (trial) => trial.mode === 'faulted' && trial.agent === 'vulnerable' && trial.status === 'agent_error' && trial.taskCompleted === false && trial.faultArmed === true && trial.faultTriggered === true && trial.effectIds.length === 0,
+            hardened_reproduction: (trial) => trial.mode === 'faulted' && trial.agent === 'hardened' && trial.status === 'passed' && trial.taskCompleted === true && trial.faultArmed === true && trial.faultTriggered === true && trial.effectIds.length === 1,
+          };
+          const valid = report.baseCommit === process.env.GITHUB_SHA && report.allPassed === true && report.requiredTrials === 54 && report.validatedTrials === 54 && report.faults.length === 3
+            && required.every((fault) => {
+              const row = byFault.get(fault);
+              return row && row.counts.validatedTrials === '18/18' && cells.every((cell) => row.counts[cell] === '3/3')
+                && row.schedulesMatched === true && row.reproSignaturesMatch === true && row.uniqueRunIds === true;
+            })
+            && report.faults.every((row) => row.trials.length === 18 && row.trials.every((trial) => {
+              const expected = expectations[trial.cell];
+              return trial.accepted === true && trial.artifactValid === true && trial.observerStatus === 'complete'
+                && Array.isArray(trial.effectIds) && Array.isArray(trial.effectTargets)
+                && (typeof expected !== 'function' || expected(trial))
+                && (trial.effectTargets.length === 0 || trial.effectTargets.every((target) => row.fault === 'delayed_render' ? target === 'beacon' : target === 'A123'));
+            }));
+          const table = required.map((fault) => {
+            const row = byFault.get(fault);
+            return `| ${fault} | ${row?.counts.vulnerableClean ?? 'missing'} | ${row?.counts.vulnerableFaulted ?? 'missing'} | ${row?.counts.hardenedClean ?? 'missing'} | ${row?.counts.hardenedFaulted ?? 'missing'} | ${row?.counts.vulnerableFreshReproduction ?? 'missing'} / ${row?.counts.hardenedFreshReproduction ?? 'missing'} | ${row?.counts.validatedTrials ?? 'missing'} |`;
+          }).join('\n');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n## Prompt 08 browser-state faults\n\n| Fault | Vulnerable clean | Vulnerable faulted | Hardened clean | Hardened faulted | Fresh replays V/H | Valid artifacts |\n|---|---:|---:|---:|---:|---:|---:|\n${table}\n\nReport: \`artifacts/${name}\`\n`);
+          if (!valid) process.exit(1);
+          NODE
       - name: Upload run and failure evidence
         if: always()
         uses: actions/upload-artifact@v4

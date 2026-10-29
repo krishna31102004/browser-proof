@@ -7,6 +7,7 @@ import { ARTIFACT_SCHEMA_VERSION, evaluateRefundAtMostOnce, type NetworkFaultSce
 export type { NetworkFaultScenarioId, NetworkFaultSchedule, NetworkFaultType } from "@browserproof/contracts";
 import { startSupportDesk, type SupportDeskServer } from "@browserproof/demo-support";
 import { EventWriter } from "./event-writer.js";
+import { validatePlaywrightTraceArchive } from "./trace-archive.js";
 import { queryEffects } from "./run.js";
 
 export type NetworkFaultStatus = "passed" | "contract_violation" | "agent_error" | "browser_error" | "injection_error" | "observer_inconclusive" | "timeout";
@@ -387,8 +388,8 @@ export async function validateNetworkFaultArtifacts(artifactDir: string): Promis
       const bytes = await readFile(join(artifactDir, "screenshots", name));
       if (bytes.length < 100 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE) || bytes.readUInt32BE(16) < 1 || bytes.readUInt32BE(20) < 1) errors.push(`invalid screenshot ${name}`);
     }
-    const trace = await readFile(join(artifactDir, "trace.zip"));
-    if (trace.length < 100 || trace[0] !== 0x50 || trace[1] !== 0x4b) errors.push("invalid Playwright trace ZIP");
+    const traceValidation = await validatePlaywrightTraceArchive(join(artifactDir, "trace.zip"));
+    if (!traceValidation.valid) errors.push(...traceValidation.errors.map((error) => `invalid Playwright trace ZIP: ${error}`));
   } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
   return { valid: errors.length === 0, errors };
 }

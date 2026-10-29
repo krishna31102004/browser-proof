@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createNetworkFaultSchedule, executeNetworkFaultRun, validateNetworkFaultArtifacts, validateNetworkFaultSchedule, type NetworkFaultType } from "../src/network-fault-run.js";
@@ -30,6 +30,19 @@ describe("real Chromium network fault runs", () => {
       expect(result.requests.find((request) => request.requestId === result.fault.requestId)?.responseDelivered).toBe(true);
       expect(result.requests.some((request) => request.requestId === result.fault.requestId && request.browserRequestFailed)).toBe(false);
       expect((await validateNetworkFaultArtifacts(artifactDir)).valid).toBe(true);
+      const tracePath = join(artifactDir, "trace.zip");
+      const validTrace = await readFile(tracePath);
+      expect(validTrace.subarray(0, 2).toString()).toBe("PK");
+      const validTraceResult = await validateNetworkFaultArtifacts(artifactDir);
+      expect(validTraceResult.valid).toBe(true);
+      const damagedTrace = Buffer.from(validTrace);
+      damagedTrace[Math.floor(damagedTrace.length / 2)] = damagedTrace[Math.floor(damagedTrace.length / 2)]! ^ 0xff;
+      await writeFile(tracePath, damagedTrace);
+      expect((await stat(tracePath)).size).toBe(validTrace.length);
+      const corruptTrace = await validateNetworkFaultArtifacts(artifactDir);
+      expect(corruptTrace.valid).toBe(false);
+      expect(corruptTrace.errors.join(" ")).toMatch(/trace zip|crc|invalid/i);
+      await writeFile(tracePath, validTrace);
       const resultPath = join(artifactDir, "result.json");
       const resultDoc = JSON.parse(await readFile(resultPath, "utf8")) as { requests: Array<Record<string, unknown>>; fault: { requestId: string } };
       const delayedRequest = resultDoc.requests.find((request) => request.requestId === resultDoc.fault.requestId)!;

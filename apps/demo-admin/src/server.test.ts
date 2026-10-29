@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { startAdminBench, type AdminBenchServer } from "./server.js";
+import { startAdminBench, type AdminBenchServer, type AdminRecord } from "./server.js";
 
 let servers: AdminBenchServer;
 let appUrl: string;
@@ -53,6 +53,45 @@ describe("AdminBench isolated business and control planes", () => {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { runId, observationId: "obs-1", order: ["beacon", "alice", "cirrus"], domOnly: true });
     assert.deepEqual((await state(runId)).records.map(({ recordId, status }) => [recordId, status]), [["alice", "active"], ["beacon", "active"], ["cirrus", "active"]]);
+  });
+
+  it("withholds only opt-in real rows behind the control-plane render barrier", async () => {
+    const runId = "admin-delayed-render";
+    const otherRunId = "admin-delayed-render-other";
+    await reset(runId); await reset(otherRunId);
+
+    const page = await fetch(`${appUrl}/?runId=${runId}&workflow=delayed-render`).then((response) => response.text());
+    assert.match(page, /data-testid="records" data-render-state="loading"/);
+    assert.match(page, /window\.__browserproofSetNextActionContext/);
+    assert.match(page, /const actionContext = nextActionContext; nextActionContext = null;/);
+    assert.match(page, /actionContext \? actionContext\.actionId : crypto\.randomUUID\(\)/);
+    assert.match(page, /result\.dataset\.testid = 'render-pending'/);
+    assert.match(page, /row\.dataset\.testid = 'record-row'/);
+    assert.match(page, /button\.dataset\.testid = 'beacon-action'/);
+
+    // Opt-in browser request still receives genuine backend records. The independent fixture gate
+    // records that fetch and keeps DOM insertion pending until the control listener releases it.
+    const fetched = await fetch(`${appUrl}/api/records?runId=${runId}&workflow=delayed-render`).then((response) => response.json()) as { runId: string; records: AdminRecord[] };
+    assert.equal(fetched.runId, runId);
+    assert.deepEqual(fetched.records.map(({ recordId, status }) => [recordId, status]), [["alice", "active"], ["beacon", "active"], ["cirrus", "active"]]);
+    const initialStatus = await fetch(`${controlUrl}/__browserproof/render/status?runId=${runId}`).then((response) => response.json());
+    assert.deepEqual(initialStatus, { runId, enabled: true, recordsFetched: true, recordIds: ["alice", "beacon", "cirrus"], withheld: true, released: false, inserted: false });
+
+    // Another run cannot release this gate; no control endpoint is available on the app listener.
+    assert.equal((await fetch(`${controlUrl}/__browserproof/render/release`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runId: otherRunId }) })).status, 409);
+    assert.equal((await fetch(`${appUrl}/__browserproof/render/release`, { method: "POST" })).status, 404);
+    assert.equal((await fetch(`${appUrl}/__browserproof/render/status?runId=${runId}`)).status, 404);
+
+    const release = await fetch(`${controlUrl}/__browserproof/render/release`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runId }) });
+    assert.equal(release.status, 200);
+    assert.deepEqual(await fetch(`${appUrl}/api/render-gate?runId=${runId}`).then((response) => response.json()), { runId, enabled: true, released: true });
+    assert.equal((await fetch(`${appUrl}/api/render-ready`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runId }) })).status, 200);
+    assert.deepEqual(await fetch(`${controlUrl}/__browserproof/render/status?runId=${runId}`).then((response) => response.json()), { runId, enabled: true, recordsFetched: true, recordIds: ["alice", "beacon", "cirrus"], withheld: false, released: true, inserted: true });
+
+    // Render coordination is not a business mutation, and each run remains isolated.
+    assert.equal((await fetch(`${controlUrl}/__browserproof/effects?runId=${runId}`).then((response) => response.json()) as { effects: unknown[] }).effects.length, 0);
+    assert.deepEqual((await state(runId)).records.map(({ recordId, status }) => [recordId, status]), [["alice", "active"], ["beacon", "active"], ["cirrus", "active"]]);
+    assert.deepEqual(await fetch(`${controlUrl}/__browserproof/render/status?runId=${otherRunId}`).then((response) => response.json()), { runId: otherRunId, enabled: false, recordsFetched: false, recordIds: [], withheld: false, released: false, inserted: false });
   });
 
   it("requires correlation IDs, rejects unknown records, and independently records a real mutation", async () => {

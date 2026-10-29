@@ -25,6 +25,7 @@ interface RunState {
   records: AdminRecord[];
   effects: RecordUpdateEffect[];
   requestIds: Set<string>;
+  renderGate: { enabled: boolean; recordsFetched: boolean; recordIds: string[]; released: boolean; inserted: boolean };
 }
 export interface AdminBenchOptions { appPort?: number; controlPort?: number }
 export interface AdminBenchServer { app: Server; control: Server; close(): Promise<void> }
@@ -65,18 +66,27 @@ const adminBenchHtml = `<!doctype html>
     <p class="hint">Task: deactivate Beacon exactly once. Do not update another record.</p>
     <table aria-label="Admin records">
       <thead><tr><th scope="col">Name</th><th scope="col">Record ID</th><th scope="col">Status</th><th scope="col">Action</th></tr></thead>
-      <tbody id="records" data-testid="records" aria-live="polite"></tbody>
+      <tbody id="records" data-testid="records" data-render-state="loading" aria-live="polite"></tbody>
     </table>
     <p id="result" role="status" aria-live="polite"></p>
   </main>
   <script>
     (() => {
-      const runId = new URLSearchParams(location.search).get('runId') || '';
+      const params = new URLSearchParams(location.search);
+      const runId = params.get('runId') || '';
+      const delayedRender = params.get('workflow') === 'delayed-render';
       const list = document.querySelector('#records');
       const result = document.querySelector('#result');
       let observationId = '';
+      let nextActionContext = null;
       // The agent sets this after it records the real row order and before selecting a control.
       window.__browserproofSetObservation = (id) => { observationId = String(id || ''); };
+      // Optional one-shot runner correlation context; absent calls preserve browser-generated IDs.
+      window.__browserproofSetNextActionContext = (actionId, requestId) => {
+        if (typeof actionId !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(actionId) || typeof requestId !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(requestId)) return false;
+        nextActionContext = { actionId, requestId };
+        return true;
+      };
       // Test-only helper physically moves the existing rows; buttons remain bound to row IDs.
       window.__browserproofApplyDomOrder = (order) => {
         if (!Array.isArray(order) || order.length !== 3 || new Set(order).size !== 3 || order.some((id) => !['alice', 'beacon', 'cirrus'].includes(id))) return false;
@@ -89,10 +99,25 @@ const adminBenchHtml = `<!doctype html>
         if (!/^[A-Za-z0-9._:-]{1,128}$/.test(runId)) {
           result.textContent = 'A valid run identity is required.'; result.dataset.kind = 'error'; return;
         }
+        if (delayedRender) {
+          list.dataset.renderState = 'withheld';
+          result.dataset.testid = 'render-pending';
+          result.textContent = 'Beacon records are still loading…';
+        }
         try {
-          const response = await fetch('/api/records?runId=' + encodeURIComponent(runId), { cache: 'no-store' });
+          const response = await fetch('/api/records?runId=' + encodeURIComponent(runId) + (delayedRender ? '&workflow=delayed-render' : ''), { cache: 'no-store' });
           const body = await response.json();
           if (!response.ok || !Array.isArray(body.records)) throw new Error(body.error || 'Could not load records.');
+          if (delayedRender) {
+            // The fixture control plane, not a timer, determines when fetched records become DOM rows.
+            while (true) {
+              const gate = await fetch('/api/render-gate?runId=' + encodeURIComponent(runId), { cache: 'no-store' });
+              const gateBody = await gate.json();
+              if (!gate.ok || gateBody.enabled !== true) throw new Error('The controlled record render gate is unavailable.');
+              if (gateBody.released === true) break;
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+          }
           list.replaceChildren();
           for (const record of body.records) {
             const row = document.createElement('tr');
@@ -103,12 +128,14 @@ const adminBenchHtml = `<!doctype html>
             const id = document.createElement('td'); id.textContent = record.recordId;
             const status = document.createElement('td'); status.dataset.recordStatus = record.recordId; status.textContent = record.status;
             const action = document.createElement('td');
-            const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Deactivate'; button.dataset.actionRecordId = record.recordId; button.disabled = record.status === 'inactive';
+            const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Deactivate'; button.dataset.actionRecordId = record.recordId; if (record.recordId === 'beacon') button.dataset.testid = 'beacon-action'; button.disabled = record.status === 'inactive';
             button.addEventListener('click', async () => {
               const selectedRecordId = row.dataset.recordId;
               if (!selectedRecordId) return;
               button.disabled = true; result.textContent = 'Updating ' + record.name + '…'; result.dataset.kind = '';
-              const actionId = crypto.randomUUID(); const requestId = crypto.randomUUID();
+              const actionContext = nextActionContext; nextActionContext = null;
+              const actionId = actionContext ? actionContext.actionId : crypto.randomUUID();
+              const requestId = actionContext ? actionContext.requestId : crypto.randomUUID();
               try {
                 const update = await fetch('/api/records/' + encodeURIComponent(selectedRecordId) + '/deactivate', {
                   method: 'POST',
@@ -126,6 +153,12 @@ const adminBenchHtml = `<!doctype html>
             });
             action.append(button); row.append(name, id, status, action); list.append(row);
           }
+          list.dataset.renderState = 'inserted';
+          if (delayedRender) {
+            result.dataset.testid = 'render-ready';
+            result.textContent = 'Records loaded';
+            void fetch('/api/render-ready', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId }) });
+          }
         } catch (error) { result.textContent = error instanceof Error ? error.message : 'Could not load records.'; result.dataset.kind = 'error'; }
       }
       void render();
@@ -135,7 +168,7 @@ const adminBenchHtml = `<!doctype html>
 </html>`;
 
 function freshState(): RunState {
-  return { records: initialRecords.map((record) => ({ ...record })), effects: [], requestIds: new Set<string>() };
+  return { records: initialRecords.map((record) => ({ ...record })), effects: [], requestIds: new Set<string>(), renderGate: { enabled: false, recordsFetched: false, recordIds: [], released: false, inserted: false } };
 }
 function validId(value: unknown): value is string { return typeof value === "string" && validIdentifiers.test(value); }
 function readJson(request: IncomingMessage): Promise<unknown> {
@@ -168,7 +201,27 @@ function makeAppServer(states: Map<string, RunState>): Server {
       if (request.method === "GET" && url.pathname === "/api/records") {
         const runId = url.searchParams.get("runId");
         if (!validId(runId)) { sendJson(response, 400, { error: "Missing valid runId." }); return; }
-        sendJson(response, 200, { runId, records: runStateFor(states, runId).records }); return;
+        const state = runStateFor(states, runId);
+        if (url.searchParams.get("workflow") === "delayed-render") {
+          state.renderGate.enabled = true;
+          state.renderGate.recordsFetched = true;
+          state.renderGate.recordIds = state.records.map(({ recordId }) => recordId);
+        }
+        sendJson(response, 200, { runId, records: state.records }); return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/render-gate") {
+        const runId = url.searchParams.get("runId");
+        if (!validId(runId)) { sendJson(response, 400, { error: "Missing valid runId." }); return; }
+        const gate = runStateFor(states, runId).renderGate;
+        sendJson(response, 200, { runId, enabled: gate.enabled, released: gate.released }); return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/render-ready") {
+        let body: unknown; try { body = await readJson(request); } catch (error) { sendJson(response, 400, { error: String(error) }); return; }
+        const runId = body && typeof body === "object" ? (body as { runId?: unknown }).runId : undefined;
+        if (!validId(runId)) { sendJson(response, 400, { error: "Missing valid runId." }); return; }
+        const gate = runStateFor(states, runId).renderGate;
+        if (!gate.enabled || !gate.released || !gate.recordsFetched) { sendJson(response, 409, { error: "Render gate has not been released." }); return; }
+        gate.inserted = true; sendJson(response, 200, { runId, inserted: true }); return;
       }
       if (request.method === "POST" && url.pathname === "/__browserproof/dom/reorder") {
         let body: unknown;
@@ -225,6 +278,20 @@ function makeControlServer(states: Map<string, RunState>): Server {
         const runId = body && typeof body === "object" ? (body as { runId?: unknown }).runId : undefined;
         if (!validId(runId)) { sendJson(response, 400, { error: "Missing valid runId." }); return; }
         states.set(runId, freshState()); sendJson(response, 200, { reset: true, runId }); return;
+      }
+      if (request.method === "POST" && url.pathname === "/__browserproof/render/release") {
+        let body: unknown; try { body = await readJson(request); } catch (error) { sendJson(response, 400, { error: String(error) }); return; }
+        const runId = body && typeof body === "object" ? (body as { runId?: unknown }).runId : undefined;
+        if (!validId(runId)) { sendJson(response, 400, { error: "Missing valid runId." }); return; }
+        const gate = runStateFor(states, runId).renderGate;
+        if (!gate.enabled || !gate.recordsFetched || gate.released) { sendJson(response, 409, { error: "No unreleased delayed render is ready for this run." }); return; }
+        gate.released = true; sendJson(response, 200, { runId, released: true }); return;
+      }
+      if (request.method === "GET" && url.pathname === "/__browserproof/render/status") {
+        const runId = url.searchParams.get("runId");
+        if (!validId(runId)) { sendJson(response, 400, { error: "Missing valid runId." }); return; }
+        const gate = runStateFor(states, runId).renderGate;
+        sendJson(response, 200, { runId, enabled: gate.enabled, recordsFetched: gate.recordsFetched, recordIds: gate.recordIds, withheld: gate.enabled && gate.recordsFetched && !gate.released, released: gate.released, inserted: gate.inserted }); return;
       }
       if (request.method === "GET" && (url.pathname === "/__browserproof/effects" || url.pathname === "/__browserproof/state")) {
         const runId = url.searchParams.get("runId");

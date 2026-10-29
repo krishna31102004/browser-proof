@@ -8,6 +8,7 @@ import { executeAdminRun, type AdminAgentPolicy, type AdminRunResult } from "./a
 import { validateAdminArtifacts } from "./admin-artifact-validation.js";
 import { exportDemoEvidence } from "./demo-export.js";
 import { executeNetworkFaultRun, validateNetworkFaultArtifacts, type NetworkFaultRunResult, type NetworkFaultType, type NetworkFaultSchedule } from "./network-fault-run.js";
+import { BROWSER_STATE_TYPES, browserStateSignature, createBrowserStateSchedule, executeBrowserStateRun, validateBrowserStateArtifacts, validateBrowserStateSchedule, type BrowserStateAgentPolicy, type BrowserStateFaultSchedule, type BrowserStateFaultType, type BrowserStateRunResult } from "./browser-fault-run.js";
 
 function argument(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -59,6 +60,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 async function runOnce(): Promise<number> {
+  if (argument("--scenario") === "browser-state") return runBrowserStateOnce();
   if (argument("--scenario") === "adminbench") return runAdminOnce();
   if (argument("--scenario") === "supportdesk-network") return runNetworkFaultOnce();
   const mode = argument("--mode") as RunMode | undefined;
@@ -67,6 +69,85 @@ async function runOnce(): Promise<number> {
   const run = await executeRun({ mode, seed });
   printRun(run.result, run.artifactDir);
   return isExpectedRun(run.result) && await validateRunArtifacts(run.artifactDir, run.result) ? 0 : 1;
+}
+
+function expectedBrowserState(result: BrowserStateRunResult, expectedMode: "clean" | "faulted", agent: BrowserStateAgentPolicy): boolean {
+  const validation = result.fault;
+  if (result.mode !== expectedMode || result.agentPolicy !== agent || result.observerStatus !== "complete") return false;
+  if (expectedMode === "clean") return result.status === "passed" && result.taskCompleted && result.availability === "available" && result.observedEffects.length === 1 && !validation.triggered;
+  if (agent === "vulnerable") return validation.armed && validation.triggered && result.status === "agent_error" && !result.taskCompleted && result.availability === "task_unavailable" && result.observedEffects.length === 0;
+  return validation.armed && validation.triggered && result.status === "passed" && result.taskCompleted && result.availability === "available" && result.observedEffects.length === 1;
+}
+
+async function runBrowserStateOnce(): Promise<number> {
+  const fault = argument("--fault") as BrowserStateFaultType | undefined;
+  const agent = argument("--agent") as BrowserStateAgentPolicy | undefined;
+  const mode = argument("--mode") as RunMode | undefined;
+  const seed = argument("--seed");
+  if (!fault || !BROWSER_STATE_TYPES.includes(fault) || (agent !== "vulnerable" && agent !== "hardened") || (mode !== "clean" && mode !== "faulted") || !seed) throw new Error("Usage: pnpm bp run --scenario browser-state --fault <delayed_render|session_expire|navigation_abort> --agent <vulnerable|hardened> --mode <clean|faulted> --seed <seed>");
+  const run = await executeBrowserStateRun({ fault, agent, mode, seed });
+  const validation = await validateBrowserStateArtifacts(run.artifactDir);
+  console.log(JSON.stringify({ runId: run.result.runId, fault, agent, mode, status: run.result.status, taskCompleted: run.result.taskCompleted, availability: run.result.availability, effects: run.result.observedEffects.length, effectIds: run.result.observedEffects.map(({ effectId }) => effectId), faultArmed: run.result.fault.armed, faultTriggered: run.result.fault.triggered, signature: browserStateSignature(run.result), artifactDir: run.artifactDir, artifactValid: validation.valid, errors: validation.errors }, null, 2));
+  return validation.valid && expectedBrowserState(run.result, mode, agent) ? 0 : 1;
+}
+
+async function verifyBrowserFaults(): Promise<number> {
+  const rows: Array<Record<string, unknown>> = [];
+  let allPassed = true;
+  for (const fault of BROWSER_STATE_TYPES) {
+    const schedule = createBrowserStateSchedule(fault, `browser-state-${fault}-v1`);
+    const clean: Record<BrowserStateAgentPolicy, Awaited<ReturnType<typeof executeBrowserStateRun>>[]> = { vulnerable: [], hardened: [] };
+    const faulted: Record<BrowserStateAgentPolicy, Awaited<ReturnType<typeof executeBrowserStateRun>>[]> = { vulnerable: [], hardened: [] };
+    const reproductions: Record<BrowserStateAgentPolicy, Awaited<ReturnType<typeof executeBrowserStateRun>>[]> = { vulnerable: [], hardened: [] };
+    for (const agent of ["vulnerable", "hardened"] as const) for (let i = 1; i <= 3; i += 1) clean[agent].push(await executeBrowserStateRun({ fault, agent, mode: "clean", seed: `${schedule.seed}-clean-${agent}-${i}` }));
+    for (let i = 1; i <= 3; i += 1) {
+      faulted.vulnerable.push(await executeBrowserStateRun({ fault, agent: "vulnerable", mode: "faulted", seed: schedule.seed, schedule }));
+      faulted.hardened.push(await executeBrowserStateRun({ fault, agent: "hardened", mode: "faulted", seed: schedule.seed, schedule }));
+    }
+    for (const agent of ["vulnerable", "hardened"] as const) {
+      const source = faulted[agent][0]!;
+      const sourceDoc = await readJson(resolve(source.artifactDir, "schedule.json"));
+      const saved = Array.isArray(sourceDoc.faults) ? sourceDoc.faults[0] : undefined;
+      if (!validateBrowserStateSchedule(saved, fault, schedule.seed)) throw new Error(`Invalid serialized ${fault} schedule in ${source.artifactDir}`);
+      for (let i = 1; i <= 3; i += 1) reproductions[agent].push(await executeBrowserStateRun({ fault, agent, mode: "faulted", seed: schedule.seed, schedule: saved, sourceRunId: source.result.runId }));
+    }
+    const cases = [
+      ...clean.vulnerable.map((run) => ({ cell: "vulnerable_clean", run, expectedMode: "clean" as const, expectedAgent: "vulnerable" as const })),
+      ...faulted.vulnerable.map((run) => ({ cell: "vulnerable_faulted", run, expectedMode: "faulted" as const, expectedAgent: "vulnerable" as const })),
+      ...clean.hardened.map((run) => ({ cell: "hardened_clean", run, expectedMode: "clean" as const, expectedAgent: "hardened" as const })),
+      ...faulted.hardened.map((run) => ({ cell: "hardened_faulted", run, expectedMode: "faulted" as const, expectedAgent: "hardened" as const })),
+      ...reproductions.vulnerable.map((run) => ({ cell: "vulnerable_reproduction", run, expectedMode: "faulted" as const, expectedAgent: "vulnerable" as const })),
+      ...reproductions.hardened.map((run) => ({ cell: "hardened_reproduction", run, expectedMode: "faulted" as const, expectedAgent: "hardened" as const })),
+    ];
+    const ids = new Set<string>(); const effectIds = new Set<string>(); let validated = 0;
+    const savedScheduleIds = new Set<string>();
+    const trials = [] as Array<Record<string, unknown>>;
+    for (const item of cases) {
+      const { result, artifactDir } = item.run;
+      const validation = await validateBrowserStateArtifacts(artifactDir);
+      const expected = expectedBrowserState(result, item.expectedMode, item.expectedAgent);
+      const uniqueRun = !ids.has(result.runId); ids.add(result.runId);
+      const uniqueEffects = result.observedEffects.every((effect) => !effectIds.has(effect.effectId));
+      result.observedEffects.forEach((effect) => effectIds.add(effect.effectId));
+      const scheduleDoc = await readJson(resolve(artifactDir, "schedule.json"));
+      const saved = Array.isArray(scheduleDoc.faults) ? scheduleDoc.faults[0] as BrowserStateFaultSchedule | undefined : undefined;
+      if (saved) savedScheduleIds.add(saved.scheduleId);
+      const runPass = validation.valid && expected && uniqueRun && uniqueEffects;
+      if (runPass) validated += 1;
+      trials.push({ cell: item.cell, runId: result.runId, agent: result.agentPolicy, mode: result.mode, status: result.status, taskCompleted: result.taskCompleted, availability: result.availability, faultArmed: result.fault.armed, faultTriggered: result.fault.triggered, scheduleId: saved?.scheduleId ?? null, observerStatus: result.observerStatus, effectIds: result.observedEffects.map((effect) => effect.effectId), effectTargets: result.observedEffects.map((effect) => effect.entityId), signature: browserStateSignature(result), artifactDir, artifactValid: validation.valid, validationErrors: validation.errors, accepted: runPass });
+    }
+    const schedulesMatched = faulted.vulnerable.every(({ result }) => result.fault.type === fault) && faulted.hardened.every(({ result }) => result.fault.type === fault) && savedScheduleIds.size === 1;
+    const reproSignaturesMatch = (["vulnerable", "hardened"] as const).every((agent) => reproductions[agent].every(({ result }) => browserStateSignature(result) === browserStateSignature(faulted[agent][0]!.result)));
+    const uniqueIds = ids.size === 18;
+    const passed = validated === 18 && schedulesMatched && reproSignaturesMatch && uniqueIds;
+    allPassed &&= passed;
+    const cellCount = (cell: string) => trials.filter((trial) => trial.cell === cell && trial.accepted).length;
+    rows.push({ fault, scenarioId: schedule.scenarioId, scheduleId: schedule.scheduleId, counts: { vulnerableClean: `${cellCount("vulnerable_clean")}/3`, vulnerableFaulted: `${cellCount("vulnerable_faulted")}/3`, hardenedClean: `${cellCount("hardened_clean")}/3`, hardenedFaulted: `${cellCount("hardened_faulted")}/3`, vulnerableFreshReproduction: `${cellCount("vulnerable_reproduction")}/3`, hardenedFreshReproduction: `${cellCount("hardened_reproduction")}/3`, validatedTrials: `${validated}/18` }, schedulesMatched, reproSignaturesMatch, uniqueRunIds: uniqueIds, trials });
+  }
+  const report = { schemaVersion: 1, campaign: "browser-faults", baseCommit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(), createdAt: new Date().toISOString(), requiredTrials: 54, validatedTrials: rows.reduce((sum, row) => sum + Number(String((row.counts as Record<string, unknown>).validatedTrials).split("/")[0]), 0), allPassed, faults: rows };
+  const reportPath = resolve("artifacts", `browser-faults-verification-${randomUUID()}.json`); await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  console.log(JSON.stringify({ campaign: report.campaign, allPassed, requiredTrials: report.requiredTrials, validatedTrials: report.validatedTrials, faults: rows.map(({ fault, counts, scheduleId }) => ({ fault, scheduleId, counts })), reportPath }, null, 2));
+  return allPassed && report.validatedTrials === 54 ? 0 : 1;
 }
 
 async function runNetworkFaultOnce(): Promise<number> {
@@ -140,6 +221,7 @@ async function reproduce(): Promise<number> {
     readJson(resolve(sourceDir, "scenario.json")), readJson(resolve(sourceDir, "schedule.json")), readJson(resolve(sourceDir, "result.json")),
   ]);
   if (schedule.mode !== "faulted" || !Array.isArray(schedule.faults)) throw new Error("Reproduction source must contain a saved faulted scenario/schedule");
+  if (typeof scenario.scenarioId === "string" && scenario.scenarioId.startsWith("adminbench-delayed-render-") || scenario.scenarioId === "adminbench-delayed-render-v1" || scenario.scenarioId === "supportdesk-session-expire-v1" || scenario.scenarioId === "supportdesk-navigation-abort-v1") return reproduceBrowserState(sourceDir, scenario, schedule, originalResult, times);
   if (scenario.name === "adminbench-deactivate-record") return reproduceAdmin(sourceDir, schedule, originalResult, times);
   if (scenario.name === "supportdesk-refund-network" || scenario.name === "supportdesk-stale-order-read") {
     const saved = schedule.faults[0] as NetworkFaultSchedule | undefined;
@@ -176,6 +258,28 @@ async function reproduce(): Promise<number> {
   }
   console.log(`Reproduction: ${successes}/${times}`);
   return successes === times ? 0 : 1;
+}
+
+async function reproduceBrowserState(sourceDir: string, scenario: Record<string, unknown>, scheduleDoc: Record<string, unknown>, rawOriginal: Record<string, unknown>, times: number): Promise<number> {
+  const sourceValidation = await validateBrowserStateArtifacts(sourceDir);
+  if (!sourceValidation.valid) throw new Error(`Browser-state reproduction source failed artifact validation: ${sourceValidation.errors.join("; ")}`);
+  const sourceResult = rawOriginal as unknown as BrowserStateRunResult;
+  const fault = sourceResult.fault.type;
+  if (!fault || !BROWSER_STATE_TYPES.includes(fault) || scenario.scenarioId !== sourceResult.scenarioId) throw new Error("Browser-state reproduction scenario and result do not match");
+  const saved = Array.isArray(scheduleDoc.faults) ? scheduleDoc.faults[0] : undefined;
+  if (!validateBrowserStateSchedule(saved, fault, sourceResult.seed)) throw new Error("Browser-state reproduction schedule is invalid or mismatched");
+  const override = argument("--agent");
+  const agent = (override ?? sourceResult.agentPolicy) as BrowserStateAgentPolicy;
+  if (agent !== "vulnerable" && agent !== "hardened") throw new Error("--agent must be vulnerable or hardened");
+  let passes = 0; const runs = [] as Awaited<ReturnType<typeof executeBrowserStateRun>>[]; const seen = new Set([sourceResult.runId]);
+  for (let i = 1; i <= times; i += 1) runs.push(await executeBrowserStateRun({ fault, agent, mode: "faulted", seed: sourceResult.seed, schedule: saved, sourceRunId: sourceResult.runId }));
+  for (const run of runs) {
+    const validation = await validateBrowserStateArtifacts(run.artifactDir);
+    const unique = !seen.has(run.result.runId); seen.add(run.result.runId);
+    if (validation.valid && unique && expectedBrowserState(run.result, "faulted", agent) && browserStateSignature(run.result) === browserStateSignature({ ...sourceResult, agentPolicy: agent })) passes += 1;
+  }
+  console.log(JSON.stringify({ reproduction: `${passes}/${times}`, sourceRunId: sourceResult.runId, fault, agent, scheduleId: saved.scheduleId, signature: browserStateSignature({ ...sourceResult, agentPolicy: agent }), runIds: runs.map(({ result }) => result.runId), effects: runs.map(({ result }) => result.observedEffects.map(({ effectId }) => effectId)), artifacts: runs.map(({ artifactDir }) => artifactDir) }, null, 2));
+  return passes === times ? 0 : 1;
 }
 
 async function verify(): Promise<number> {
@@ -470,7 +574,7 @@ async function main(): Promise<void> {
   let code: number;
   if (command === "run") code = await runOnce();
   else if (command === "repro") code = await reproduce();
-  else if (command === "verify") code = scenario === "adminbench" ? await verifyAdminBench() : scenario === "network-faults" ? await verifyNetworkFaults() : await verify();
+  else if (command === "verify") code = scenario === "adminbench" ? await verifyAdminBench() : scenario === "network-faults" ? await verifyNetworkFaults() : scenario === "browser-faults" ? await verifyBrowserFaults() : await verify();
   else if (command === "regression") code = await runRegression();
   else if (command === "export-demo") code = await exportDemo();
   else throw new Error("Usage: pnpm bp <run|repro|verify>");

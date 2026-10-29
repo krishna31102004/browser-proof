@@ -59,7 +59,15 @@ export type NetworkFaultSchedule =
   | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "supportdesk-request-abort-v1"; type: "request_abort"; seed: string; target: { method: "POST"; path: "/api/orders/A123/refund" }; trigger: "first_matching_request_after_agent_action"; occurrenceCount: 1; abortCode: "failed" }
   | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "supportdesk-stale-order-read-v1"; type: "stale_api_response"; seed: string; target: { method: "GET"; path: "/api/orders/A123" }; trigger: "second_order_status_get_after_commit"; occurrenceCount: 1; snapshotSource: "first_pre_commit_order_get"; workflow: "refresh-after-refund" };
 
-export type FaultScheduleDefinition = FaultSchedule | AdminBenchFaultSchedule | NetworkFaultSchedule;
+export type BrowserStateFaultType = "delayed_render" | "session_expire" | "navigation_abort";
+export type BrowserStateScenarioId = "adminbench-delayed-render-v1" | "supportdesk-session-expire-v1" | "supportdesk-navigation-abort-v1";
+export type BrowserStateAgentPolicy = "vulnerable" | "hardened";
+export type BrowserStateFaultSchedule =
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "adminbench-delayed-render-v1"; type: "delayed_render"; seed: string; target: { app: "adminbench"; recordId: "beacon"; dataPath: "/api/records" }; trigger: "records_fetched_before_dom_insertion"; occurrenceCount: 1; release: "after_vulnerable_wait_failure_or_hardened_waiting_observation"; vulnerableWaitMs: number }
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "supportdesk-session-expire-v1"; type: "session_expire"; seed: string; target: { method: "POST"; path: "/api/orders/A123/refund" }; trigger: "after_authenticated_observation_before_refund_action"; occurrenceCount: 1; invalidation: "exact_observed_server_session" }
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "supportdesk-navigation-abort-v1"; type: "navigation_abort"; seed: string; target: { method: "GET"; path: "/refund?workflow=navigation-refund"; resourceType: "document"; mainFrame: true }; trigger: "first_agent_main_frame_navigation"; occurrenceCount: 1; abortCode: "failed" };
+
+export type FaultScheduleDefinition = FaultSchedule | AdminBenchFaultSchedule | NetworkFaultSchedule | BrowserStateFaultSchedule;
 
 export interface RefundEffect {
   effectId: string;

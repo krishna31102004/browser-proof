@@ -142,6 +142,8 @@ test("browser app exposes no ledger and only confirms after a successful refund 
   assert.match(html, /<button id="refund"[^>]*disabled[^>]*>Refund<\/button>/);
   assert.match(html, /fetch\('\/api\/orders\/A123'\)/);
   assert.match(html, /data-testid="order-status"/);
+  assert.match(html, /window\.__browserproofSetNextActionContext = \(actionId, requestId\)/);
+  assert.match(html, /return context \?\? \{ actionId: crypto\.randomUUID\(\), requestId: crypto\.randomUUID\(\) \}/);
   assert.match(html, /if \(!response\.ok \|\| body\.success !== true\)/);
   assert.match(html, /Refund successful/);
   assert.doesNotMatch(html, /__browserproof\/effects/);
@@ -155,4 +157,101 @@ test("browser app exposes a real read-after-write refresh control without exposi
   assert.match(html, /Refund successful\. Refresh order status to confirm\./);
   assert.match(html, /refreshButton\.addEventListener\('click', \(\) => void loadOrder\(\)\)/);
   assert.doesNotMatch(html, /__browserproof\/effects/);
+});
+
+test("server-issued HttpOnly session expires before commit and reauthentication creates a new session", async () => {
+  const runId = `session-expire-${randomUUID()}`;
+  assert.equal((await fetch(`${controlBase}/__browserproof/reset`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runId }) })).status, 200);
+  const signIn = async () => fetch(`${appBase}/api/session`, { method: "POST", headers: { "X-BrowserProof-Run-Id": runId } });
+  const first = await signIn();
+  assert.equal(first.status, 200);
+  const firstBody = await first.json() as { success: boolean; sessionRef: string };
+  const firstCookie = first.headers.get("set-cookie");
+  assert.match(firstCookie ?? "", /^bp_support_session=[a-f0-9]{64}; HttpOnly; SameSite=Lax; Path=\//);
+  assert.match(firstBody.sessionRef, /^[a-f0-9]{24}$/);
+  assert.doesNotMatch(JSON.stringify(firstBody), /[a-f0-9]{64}/);
+  const firstToken = firstCookie!.split(";")[0]!;
+
+  const invalidation = await fetch(`${controlBase}/__browserproof/invalidate-session`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ runId, sessionRef: firstBody.sessionRef })
+  });
+  assert.deepEqual(await invalidation.json(), { runId, sessionRef: firstBody.sessionRef, invalidated: true });
+
+  const postRefund = (cookie: string, requestId: string) => fetch(`${appBase}/api/orders/A123/refund`, {
+    method: "POST", headers: {
+      "X-BrowserProof-Run-Id": runId, "X-BrowserProof-Action-Id": `action-${requestId}`,
+      "X-BrowserProof-Request-Id": requestId, Cookie: cookie
+    }
+  });
+  const rejected = await postRefund(firstToken, "expired-session-request");
+  assert.equal(rejected.status, 401);
+  assert.deepEqual(await rejected.json(), { success: false, code: "SESSION_EXPIRED", error: "Session expired. Please sign in again." });
+  const ledgerAfterRejection = await fetch(`${controlBase}/__browserproof/effects?runId=${runId}`).then((response) => response.json()) as { effects: unknown[] };
+  assert.equal(ledgerAfterRejection.effects.length, 0, "401 must precede ledger mutation");
+
+  const second = await signIn();
+  assert.equal(second.status, 200);
+  const secondBody = await second.json() as { success: boolean; sessionRef: string };
+  const secondCookie = second.headers.get("set-cookie")!.split(";")[0]!;
+  assert.notEqual(secondBody.sessionRef, firstBody.sessionRef);
+  assert.notEqual(secondCookie, firstToken);
+  assert.equal((await postRefund(firstToken, "old-session-again")).status, 401, "old server-side session remains invalid");
+  assert.equal((await postRefund(secondCookie, "new-session-request")).status, 200);
+  const ledgerAfterRecovery = await fetch(`${controlBase}/__browserproof/effects?runId=${runId}`).then((response) => response.json()) as { effects: Array<{ requestId: string }> };
+  assert.deepEqual(ledgerAfterRecovery.effects.map((effect) => effect.requestId), ["new-session-request"]);
+});
+
+test("reset isolates prior session cookies and invalidation rejects mismatched run references", async () => {
+  const runA = `session-run-a-${randomUUID()}`;
+  const runB = `session-run-b-${randomUUID()}`;
+  const reset = (runId: string) => fetch(`${controlBase}/__browserproof/reset`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runId }) });
+  await reset(runA);
+  await reset(runB);
+  const issued = await fetch(`${appBase}/api/session`, { method: "POST", headers: { "X-BrowserProof-Run-Id": runA } });
+  const session = await issued.json() as { sessionRef: string };
+  const cookie = issued.headers.get("set-cookie")!.split(";")[0]!;
+  const wrongRun = await fetch(`${controlBase}/__browserproof/invalidate-session`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runId: runB, sessionRef: session.sessionRef })
+  });
+  assert.equal(wrongRun.status, 404);
+  await reset(runA);
+  const freshIssue = await fetch(`${appBase}/api/session`, { method: "POST", headers: { "X-BrowserProof-Run-Id": runA } });
+  const freshSession = await freshIssue.json() as { sessionRef: string };
+  const freshCookie = freshIssue.headers.get("set-cookie")!.split(";")[0]!;
+  assert.notEqual(freshSession.sessionRef, session.sessionRef);
+  const oldCookie = await fetch(`${appBase}/api/orders/A123/refund`, { method: "POST", headers: {
+    "X-BrowserProof-Run-Id": runA, "X-BrowserProof-Action-Id": "old-action", "X-BrowserProof-Request-Id": "old-request", Cookie: cookie
+  } });
+  assert.equal(oldCookie.status, 401, "a prior-run cookie remains invalid after reset and fresh session issue");
+  const newCookie = await fetch(`${appBase}/api/orders/A123/refund`, { method: "POST", headers: {
+    "X-BrowserProof-Run-Id": runA, "X-BrowserProof-Action-Id": "new-action", "X-BrowserProof-Request-Id": "new-request", Cookie: freshCookie
+  } });
+  assert.equal(newCookie.status, 200);
+  const oldLedger = await fetch(`${controlBase}/__browserproof/effects?runId=${runA}`).then((response) => response.json()) as { effects: unknown[] };
+  const otherLedger = await fetch(`${controlBase}/__browserproof/effects?runId=${runB}`).then((response) => response.json()) as { effects: unknown[] };
+  assert.equal(oldLedger.effects.length, 1);
+  assert.equal(otherLedger.effects.length, 0);
+});
+
+test("navigation workflow uses a real entry link and a separate refund document route", async () => {
+  const entry = await fetch(`${appBase}/?workflow=navigation-entry`);
+  assert.equal(entry.status, 200);
+  const html = await entry.text();
+  assert.match(html, /<a data-testid="open-refund-task" href="\/refund\?workflow=navigation-refund">Open refund task for order A123<\/a>/);
+  assert.doesNotMatch(html, /__browserproof\/(?:effects|reset|invalidate-session)/);
+  const target = await fetch(`${appBase}/refund?workflow=navigation-refund`);
+  assert.equal(target.status, 200);
+  assert.match(await target.text(), /<title>SupportDesk — Order A123<\/title>/);
+});
+
+test("session workflow exposes sign-in and honest 401 recovery UI without publishing auth material", async () => {
+  const html = await fetch(`${appBase}/?workflow=session-expire`).then((response) => response.text());
+  assert.match(html, /data-testid="signin-submit"/);
+  assert.match(html, /Sign in as demo support agent/);
+  assert.match(html, /body\.code === 'SESSION_EXPIRED'/);
+  assert.match(html, /Session expired\. Please sign in again\./);
+  assert.match(html, /window\.__browserproofSetNextActionContext = \(actionId, requestId\)/);
+  assert.match(html, /return context \?\? \{ actionId: crypto\.randomUUID\(\), requestId: crypto\.randomUUID\(\) \}/);
+  assert.doesNotMatch(html, /[a-f0-9]{64}|__browserproof\/(?:effects|reset|invalidate-session)/);
 });
