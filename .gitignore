@@ -3,6 +3,7 @@ node_modules/
 /.env*
 /.env.*
 /artifacts/*/
+/artifacts/*.json
 /.DS_Store
 **/.DS_Store
 playwright-report/

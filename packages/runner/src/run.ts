@@ -1,16 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile, appendFile } from "node:fs/promises";
-import { performance } from "node:perf_hooks";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page, type Route } from "playwright";
+import { EventWriter } from "./event-writer.js";
 import { startSupportDesk, type SupportDeskServer } from "@browserproof/demo-support";
 import {
   ARTIFACT_SCHEMA_VERSION,
   evaluateRefundAtMostOnce,
   type FaultSchedule,
   type RefundEffect,
-  type RunEvent,
   type RunManifest,
   type RunMode,
   type RunResult,
@@ -39,23 +38,6 @@ export function isFaultTargetMatch(method: string, requestUrl: string, target: s
 
 const SCENARIO_ID = "supportdesk-refund-v1";
 const ARTIFACT_FILES = ["manifest.json", "scenario.json", "schedule.json", "events.jsonl", "effects.json", "result.json", "trace.zip", "screenshots"];
-
-class EventWriter {
-  private sequence = 0;
-  private readonly start = performance.now();
-
-  constructor(private readonly path: string, private readonly runId: string) {}
-
-  async record(source: RunEvent["source"], type: string, payload: Record<string, unknown>, correlation: Pick<RunEvent, "agentStepId" | "actionId" | "requestId"> = {}): Promise<void> {
-    this.sequence += 1;
-    const event: RunEvent = {
-      eventId: randomUUID(), runId: this.runId, scenarioId: SCENARIO_ID, sequence: this.sequence,
-      timestamp: new Date().toISOString(), monotonicMs: Number((performance.now() - this.start).toFixed(3)),
-      source, type, payload, ...correlation,
-    };
-    await appendFile(this.path, `${JSON.stringify(event)}\n`, "utf8");
-  }
-}
 
 interface AgentOutcome {
   attempts: number;
@@ -137,7 +119,7 @@ export async function executeRun(options: RunOptions): Promise<RunSummary> {
   const artifactDir = join(artifactRoot, runId);
   const screenshotsDir = join(artifactDir, "screenshots");
   await mkdir(screenshotsDir, { recursive: true });
-  const events = new EventWriter(join(artifactDir, "events.jsonl"), runId);
+  const events = new EventWriter(join(artifactDir, "events.jsonl"), runId, SCENARIO_ID);
   const startedAt = new Date().toISOString();
   const scenario: Scenario = { schemaVersion: ARTIFACT_SCHEMA_VERSION, scenarioId: SCENARIO_ID, name: "supportdesk-refund", orderId: "A123", agentPolicy: "refund-retry-once-after-browser-failure" };
   const faultSchedule: FaultSchedule = options.schedule

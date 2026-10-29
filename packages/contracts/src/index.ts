@@ -18,6 +18,17 @@ export interface Scenario {
   agentPolicy: "refund-retry-once-after-browser-failure";
 }
 
+export interface AdminBenchScenario {
+  schemaVersion: typeof ARTIFACT_SCHEMA_VERSION;
+  scenarioId: "adminbench-deactivate-beacon-v1";
+  name: "adminbench-deactivate-record";
+  requestedRecordId: "beacon";
+  task: "Deactivate Beacon exactly once without updating another record";
+  agentPolicy: "vulnerable-index" | "hardened-stable-id";
+}
+
+export type ScenarioDefinition = Scenario | AdminBenchScenario;
+
 export interface FaultSchedule {
   schemaVersion: typeof ARTIFACT_SCHEMA_VERSION;
   scheduleId: string;
@@ -28,6 +39,21 @@ export interface FaultSchedule {
   seed: string;
 }
 
+export interface AdminBenchFaultSchedule {
+  schemaVersion: typeof ARTIFACT_SCHEMA_VERSION;
+  scheduleId: string;
+  type: "dom_replace_after_observation";
+  target: { app: "adminbench"; list: "records"; recordId: string };
+  scope: "browser-dom";
+  trigger: "after_agent_observation_before_next_click";
+  occurrenceCount: 1;
+  originalOrder: ["alice", "beacon", "cirrus"];
+  mutatedOrder: ["beacon", "alice", "cirrus"];
+  seed: string;
+}
+
+export type FaultScheduleDefinition = FaultSchedule | AdminBenchFaultSchedule;
+
 export interface RefundEffect {
   effectId: string;
   runId: string;
@@ -37,6 +63,26 @@ export interface RefundEffect {
   entityType: "order";
   entityId: string;
   amount: number;
+  committedAt: string;
+}
+
+export interface AdminRecordSnapshot {
+  recordId: string;
+  name: string;
+  status: "active" | "inactive";
+}
+
+export interface AdminRecordEffect {
+  effectId: string;
+  runId: string;
+  actionId: string;
+  requestId: string;
+  observationId: string;
+  kind: "record_update";
+  entityType: "admin_record";
+  entityId: string;
+  previousStatus: "active" | "inactive";
+  newStatus: "active" | "inactive";
   committedAt: string;
 }
 
@@ -97,4 +143,49 @@ export function evaluateRefundAtMostOnce(effects: readonly RefundEffect[]): Cont
   return count > 1
     ? { name: "refund-at-most-once", entityId: "A123", observedCount: count, limit: 1, passed: false, signature: "refund-at-most-once|A123|count>1" }
     : { name: "refund-at-most-once", entityId: "A123", observedCount: count, limit: 1, passed: true };
+}
+
+export interface AdminCorrectRecordEvaluation {
+  name: "update-correct-record";
+  requestedEntityId: "beacon";
+  observedCount: number;
+  actualEntityId: string | null;
+  newStatus: string | null;
+  passed: boolean;
+  signature?: string;
+}
+
+export function evaluateAdminCorrectRecord(
+  effects: readonly AdminRecordEffect[],
+  finalRecords: readonly AdminRecordSnapshot[],
+): AdminCorrectRecordEvaluation {
+  const updates = effects.filter((effect) => effect.kind === "record_update" && effect.entityType === "admin_record");
+  if (updates.length !== 1) {
+    return {
+      name: "update-correct-record", requestedEntityId: "beacon", observedCount: updates.length,
+      actualEntityId: updates[0]?.entityId ?? null, newStatus: updates[0]?.newStatus ?? null, passed: false,
+      signature: `update-correct-record|beacon|effect-count:${updates.length}`,
+    };
+  }
+  const effect = updates[0]!;
+  const beacon = finalRecords.find((record) => record.recordId === "beacon");
+  const alice = finalRecords.find((record) => record.recordId === "alice");
+  if (effect.entityId !== "beacon") {
+    return {
+      name: "update-correct-record", requestedEntityId: "beacon", observedCount: 1,
+      actualEntityId: effect.entityId, newStatus: effect.newStatus, passed: false,
+      signature: `update-correct-record|beacon|wrong-target:${effect.entityId}`,
+    };
+  }
+  if (effect.newStatus !== "inactive" || beacon?.status !== "inactive" || alice?.status !== "active") {
+    return {
+      name: "update-correct-record", requestedEntityId: "beacon", observedCount: 1,
+      actualEntityId: effect.entityId, newStatus: effect.newStatus, passed: false,
+      signature: "update-correct-record|beacon|incorrect-final-state",
+    };
+  }
+  return {
+    name: "update-correct-record", requestedEntityId: "beacon", observedCount: 1,
+    actualEntityId: effect.entityId, newStatus: effect.newStatus, passed: true,
+  };
 }

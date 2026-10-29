@@ -1,7 +1,7 @@
 # BrowserProof: Four-Day Recruiter-Ready Implementation Plan
 
 **Planning date:** 2026-10-28
-**Status:** PLANNED, NOT IMPLEMENTED
+**Status:** M0 and Day 2 AdminBench acceptance verified; remaining Day 2 infrastructure plus Day 3–4 work remains planned.
 **Source of truth:** `BrowserProof_Complete_Project_Handoff.md` (locked product and technical thesis).
 **Execution record:** `CODEX_RUN_LOG.md` (observed results only).
 **Agent rules:** `AGENTS.md`.
@@ -25,6 +25,8 @@
 | **Day 2: essential infrastructure and second demo** | Stabilize run/scenario IDs, action/request correlation, effect observer, typed contract API and minimal fault triggers (M1-M3 essentials). Add AdminBench wrong-record demo with agent-observation-relative DOM reorder and a hardened agent using stable IDs | Fresh-run isolation; instrumented no-fault baseline; wrong-record committed update is independently observed; vulnerable agent violates the target-ID contract; hardened agent avoids the violation; positive/negative/untriggered fault tests | Prefer **two genuine distinct failure classes** over a list of untested fault names. Add session-expiry/delay only after the two demos pass |
 | **Day 3: recruiter-facing proof and regression** | A/B vulnerable/hardened comparison (M6 subset); saved replay CLI, exit status, JSON/JUnit where useful, GitHub Actions (M7 subset); implement lightweight viewer (M8 subset) over *real exported artifacts*; keep source-only CI tests local to runner | `pnpm` clean install, typecheck, tests; CI seeded regression explicitly fails while hardened case passes (use expected-violation assertions where appropriate); viewer renders real fault/action/effect/contract timeline and loads without the local backend; no false 'live execution' button | If CI implementation or dashboard work conflicts, ensure first a reproducible CLI and genuine artifacts. Viewer is public static playback, not a remote browser farm |
 | **Day 4: deploy, polish, expand if safe** | Publish static viewer (e.g., Vercel); test public HTTPS URL on desktop and mobile; polish 60-second refund and DOM race walkthrough; improve README and license notices. Then, if gates are green, expand fault catalog, ShopBench, benchmark and optional Stagehand adapter | Public link responds correctly; browser console has no fatal errors; actual artifact metadata populates cards; links to repo/docs and repro commands work; demonstration can run offline locally if deployment fails; final resume evidence audit | Stop feature expansion early enough to repair deployment. No deployment success claim without real URL and inspection |
+
+**Observed status (2026-10-28):** Day 1 M0 remains verified at 3/3 clean, 3/3 faulted, and 3/3 fresh repro. The Day 2 AdminBench Prompt 03 gate is verified at 3/3 vulnerable clean, 3/3 vulnerable wrong-target faulted, 3/3 hardened clean, 3/3 hardened faulted with correct target, and 3/3 saved-schedule repro; `commit_then_response_lost` and `dom_replace_after_observation` are the two verified fault types. AdminBench A/B evidence is a local generated comparison artifact. Day 3 viewer/CI, deployment, Stagehand, the remaining eight fault types, and the 36-case campaign remain unimplemented.
 
 **Milestone scheduling:** M0 remains a standalone gate. M1-M3 are compressed into focused underlying primitives only after M0. Pull forward thin versions of M5, M6, M7 and M8 that serve the conference. Defer M4 minimizer/search; finish the full M5-M10 depth after the conference. Build with small verified prompts, not one giant unverified run.
 
