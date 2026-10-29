@@ -7,3 +7,6 @@ node_modules/
 **/.DS_Store
 playwright-report/
 test-results/
+# Local task instructions and the Codex-only reviewer configuration are not source-distribution files.
+/prompts/
+/browserproof_reviewer.toml

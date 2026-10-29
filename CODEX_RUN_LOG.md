@@ -7,7 +7,7 @@
 
 - Active milestone / work slice: `M0 — implementation and acceptance complete; awaiting user review`
 - Last completed verified gate: `M0 acceptance — 3/3 clean, 3/3 faulted, 3/3 saved-schedule fresh reproductions; final verifier exit 0`
-- Main branch / HEAD: `main; initial repository has no commits/HEAD; implementation files staged and uncommitted`
+- Main branch / HEAD: `main; M0 source commit ca30ad836e5be3f5b107549f602210d20c9073c7 published; final log/ignore follow-up is staged`
 - Project locally runnable: `YES — install, Chromium, typecheck, tests, and CLI runs verified`
 - Public deployment URL: `NONE VERIFIED`
 - M0 clean / faulted / repro: `3/3, 3/3, 3/3 — PASS`
@@ -59,7 +59,7 @@
 ### Prompt 02 — verify, commit, and publish M0 (2026-10-28, America/Chicago)
 
 - **Scope / goal:** Revalidate M0 from the frozen lockfile, make the verified source reviewable on the user-specified GitHub `main`, add the future publication rule, and record the actual review/publication results. No later milestone or deployment.
-- **Git state before:** `/Users/kb4086/Desktop/browser-proof`, branch `main`, no first commit/HEAD, no configured remotes, implementation files untracked. Required source paths existed. Initial remote inspection showed no refs for `main`; full `git ls-remote --heads --tags` was empty. Public GitHub API confirmed `krishna31102004/browser-proof`, default branch `main`, `private=false`.
+- **Git state before:** Repository root, branch `main`, no first commit/HEAD, no configured remotes, implementation files untracked. Required source paths existed. Initial remote inspection showed no refs for `main`; full `git ls-remote --heads --tags` was empty. Public GitHub API confirmed `krishna31102004/browser-proof`, default branch `main`, `private=false`.
 - **Repository setup:** Configured `origin` to exactly `https://github.com/krishna31102004/browser-proof.git`. Remote was initially empty (no heads/tags); initial push can create `main` without replacing remote history.
 - **Commands actually executed:**
   - `git status --short --branch`, `git remote -v`, `git branch -vv`, `git log -1 --oneline` — exit 0 overall; no commits existed and `git log -1` reported no first commit.
@@ -75,11 +75,12 @@
 - **Latest artifact inspection:** `artifacts/ec8c28ee-558a-4302-a8e7-e08745fec097/` has the required JSON, JSONL, schedule, effects, result, screenshots, and valid trace. Events: exact first effect confirmed at sequence 8; `fault.triggered` at 10; browser `network.request_failed` at 11 with same request ID and `upstreamCommitted=true`; retry reason at 13; second effect confirmed at 17; successful response at 19; contract result at 22. Two distinct effect IDs and request IDs; one retry; expected normalized signature.
 - **Repository rule:** Added a minimal `Repository publication policy` to `AGENTS.md` requiring reviewed, verified pushes to this exact `origin/main`, clean staged-file/security checks, no force-push, accurate partial-state reporting, final SHA equality checks, main-agent-only Git writes, and stopping for interactive authentication.
 - **Historical correction:** Prompt00's phrase claiming the full handoff was copied is inaccurate for the M0 workspace. The handoff was absent during M0 and is not part of this publication; the Prompt00 entry is retained, with this correction appended.
-- **Reviewer:** First staged-publication review found two P1 documentation issues: README used an exact artifact path ignored by Git, and the Prompt00 handoff claim contradicted later entries. README now explains artifacts are local-only and instructs the reader to generate a fault run then substitute its printed run ID. This entry adds the append-only correction for Prompt00. Reviewer recheck: pending.
-- **Publication outcome:** Commit/push/remote file retrieval/equality verification: pending reviewer recheck and commit. `gh auth status` reports the configured GitHub account token is invalid; no credential prompts or tokens were used. If normal push requires interactive reauthentication, stop and report that blocker.
-- **Git state after:** `origin` configured to the exact URL; staged publication set contains only the 23 intended source/docs/package/test files. Commit SHA and final remote/local status to be appended after publication attempt.
-- **Outcome:** M0 recheck `PASS`; publication `PENDING` reviewer recheck, commit, and normal push.
-- **Next action:** Complete reviewer recheck, commit on `main`, push without force, verify remote SHA and required remote files, then append those actual results.
+- **Reviewer:** First staged-publication review found two P1 documentation issues: README used an ignored local artifact path as a public sample, and Prompt00's handoff-copy claim contradicted later entries. README now documents artifacts as local-only and instructs readers to generate a fault run and substitute its printed run ID. An append-only correction clarifies Prompt00. Reviewer then found a P2 checkpoint mismatch (`untracked` versus staged), corrected it to `staged and uncommitted`, and confirmed closure. Final staged source review found no secrets, machine paths, private handoff, or remaining publication blocker.
+- **Publication:** Initial source commit `ca30ad836e5be3f5b107549f602210d20c9073c7` (`feat: implement verified BrowserProof M0 refund spike`) pushed to `https://github.com/krishna31102004/browser-proof` `main`; `git push -u origin main` exited 0. This was a normal first push to the empty remote, without force. Local HEAD equaled `git ls-remote origin refs/heads/main`. HTTPS retrieval returned byte-identical `README.md`, `packages/runner/src/run.ts`, `apps/demo-support/src/server.ts`, and `CODEX_RUN_LOG.md`. `gh auth status` had reported an invalid token, but normal Git push succeeded without prompting or token handling.
+- **Local task files:** After the source push, status showed only `prompts/` and `browserproof_reviewer.toml` untracked. Added local-task exclusions to `.gitignore` so these remain on disk but outside the public source distribution and status; no artifacts or prompts were published.
+- **Git state after source publication:** Branch `main` tracks `origin/main`; the M0 source commit above was remotely verified. The log/ignore follow-up changes are staged, and their commit/push/SHA checks remain `PENDING` at this point in the log.
+- **Outcome:** `PUBLISHED AND VERIFIED` — the M0 source commit is on the exact public repository `main`, with remote/local SHA equality and all four required files retrievable. M0 recheck remains `PASS`.
+- **Next action:** Stop at M0 for user review; do not begin Day 2/dashboard.
 
 ---
 
