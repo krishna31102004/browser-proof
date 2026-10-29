@@ -90,6 +90,13 @@
 - **Final M0 acceptance evidence:** Frozen install, typecheck, and tests exited 0; test denominator 13/13. `pnpm bp verify` exited 0 with clean 3/3 (one committed effect each), faulted 3/3 (two distinct committed effects each, one triggered post-commit response-loss fault and expected `refund-at-most-once|A123|count>1` violation), and fresh saved-schedule reproduction 3/3 (two effects each). Detailed fault run: `artifacts/ec8c28ee-558a-4302-a8e7-e08745fec097/`; effect IDs `c27e2898-ca69-462b-a571-faf303e09096` and `0518a72c-498c-44c7-beb0-667907d9bab9`; commit sequence 8 preceded trigger 10 and browser-visible failure 11 with `upstreamCommitted=true`. Trace validation (`unzip -t`) exited 0.
 - **Outcome:** `M0 PASS; PUBLISHED TO main`. No dashboard or later milestone work started. Public deployment and CI were not run. Unresolved: raw Gmail author metadata remains on the two already-published commits; removal would require user-authorized history rewrite. Await user review.
 
+#### Prompt 02 final publication check
+
+- **Log-only commit:** `e45bc8be2e2cefc0daa8d13da52e9d57ddb14b1c` (`docs: close BrowserProof M0 publication audit`) pushed normally to `origin/main`, exit 0. It uses the account-verified GitHub noreply author identity. At final check, `git rev-parse HEAD` and `git ls-remote origin refs/heads/main` both returned `e45bc8be2e2cefc0daa8d13da52e9d57ddb14b1c`; `git status --short --branch` showed `## main...origin/main`.
+- **Remote files:** Raw files fetched by immutable commit prefix `e45bc8b` and compared with local files; `README.md`, `packages/runner/src/run.ts`, `apps/demo-support/src/server.ts`, and `CODEX_RUN_LOG.md` all matched byte-for-byte. Command exit 0.
+- **Additional command failure:** Initial un-escalated `git add CODEX_RUN_LOG.md` failed with `Operation not permitted` creating `.git/index.lock` (exit 128) because `.git` is read-only in the sandbox mapping. The authorized escalated stage/commit/push command succeeded (exit 0); no source files were changed in this final publication step.
+- **Reviewer final verdict:** M0 behavior/evidence and publication checks passed; the unresolved raw Gmail author metadata issue above is the only reported concern. No history rewrite was performed.
+
 ---
 
 ### Template — copy for every subsequent Codex prompt
