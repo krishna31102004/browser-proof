@@ -52,7 +52,14 @@ export interface AdminBenchFaultSchedule {
   seed: string;
 }
 
-export type FaultScheduleDefinition = FaultSchedule | AdminBenchFaultSchedule;
+export type NetworkFaultType = "response_delay" | "request_abort" | "stale_api_response";
+export type NetworkFaultScenarioId = "supportdesk-response-delay-v1" | "supportdesk-request-abort-v1" | "supportdesk-stale-order-read-v1";
+export type NetworkFaultSchedule =
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "supportdesk-response-delay-v1"; type: "response_delay"; seed: string; target: { method: "POST"; path: "/api/orders/A123/refund" }; trigger: "first_matching_request_after_agent_action"; occurrenceCount: 1; release: "after_agent_retry_intent"; watchdogMs: number }
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "supportdesk-request-abort-v1"; type: "request_abort"; seed: string; target: { method: "POST"; path: "/api/orders/A123/refund" }; trigger: "first_matching_request_after_agent_action"; occurrenceCount: 1; abortCode: "failed" }
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "supportdesk-stale-order-read-v1"; type: "stale_api_response"; seed: string; target: { method: "GET"; path: "/api/orders/A123" }; trigger: "second_order_status_get_after_commit"; occurrenceCount: 1; snapshotSource: "first_pre_commit_order_get"; workflow: "refresh-after-refund" };
+
+export type FaultScheduleDefinition = FaultSchedule | AdminBenchFaultSchedule | NetworkFaultSchedule;
 
 export interface RefundEffect {
   effectId: string;

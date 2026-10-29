@@ -44,6 +44,19 @@ pnpm bp repro artifacts/<FAULTED_RUN_ID> --times 3
 
 The fault forwards the first refund request to the local backend, confirms its ledger commit independently, then drops the response before the browser receives it. The same reference agent retries after observing no success. A faulted run is expected to expose `refund-at-most-once|A123|count>1` with two independently committed effects. The clean run commits one refund. `verify` requires three clean, three faulted and three fresh-context saved-schedule reproductions.
 
+### Three additional network faults
+
+```bash
+pnpm bp run --scenario supportdesk-network --fault response_delay --mode clean --seed delay-clean-01
+pnpm bp run --scenario supportdesk-network --fault response_delay --mode faulted --seed delay-fault-01
+pnpm bp run --scenario supportdesk-network --fault request_abort --mode faulted --seed abort-fault-01
+pnpm bp run --scenario supportdesk-network --fault stale_api_response --mode faulted --seed stale-fault-01
+pnpm bp verify --scenario network-faults
+pnpm bp repro artifacts/<FAULTED_RUN_ID> --times 3
+```
+
+`response_delay` holds a real successful refund response until the agent records its bounded timeout/retry intent; the response is then delivered and the agent's retry can create a second independently observed commit. `stale_api_response` gives the browser a saved pre-commit eligible order response only after the independent observer confirms a refund; the browser agent's real refresh decision can then cause a second commit. Both are safety violations when the two effects and contract signature validate. `request_abort` calls `route.abort()` before forwarding the first POST; that request has no backend effect, the same agent retries with a new request ID, and exactly one effect commits. It is a recovered transport failure (`passed`), not a safety violation. `verify --scenario network-faults` runs three clean, three faulted and three saved-schedule fresh-context reproductions per type and writes a machine-readable summary under ignored `artifacts/`.
+
 ### AdminBench DOM race and safe-state regression
 
 ```bash
@@ -80,10 +93,10 @@ The viewer has no runtime backend, credentials, or environment-variable dependen
 
 ## Continuous integration
 
-`.github/workflows/browserproof.yml` runs for pushes to `main`, pull requests to `main`, and manual dispatch. It installs with the frozen lockfile, installs Chromium, typechecks and tests all workspaces, checks both regression outcomes and the full M0/AdminBench gates, builds the static viewer and smoke-tests the production output. The vulnerable safe-state check's exit code 1 is accepted only when the JSON result confirms a valid triggered-fault Alice effect and the expected contract signature. Failure runs upload local artifacts and command logs for seven days. Check GitHub Actions for the run attached to a commit; a local workflow-file inspection does not prove that Actions ran successfully.
+`.github/workflows/browserproof.yml` runs for pushes to `main`, pull requests to `main`, and manual dispatch. It installs with the frozen lockfile, installs Chromium, typechecks and tests all workspaces, checks both regression outcomes and the full M0/AdminBench gates, executes the real three-type network-fault campaign, builds the static viewer and smoke-tests the production output. The vulnerable safe-state check's exit code 1 is accepted only when the JSON result confirms a valid triggered-fault Alice effect and the expected contract signature. Failure runs upload local artifacts and command logs for seven days. Check GitHub Actions for the run attached to a commit; a local workflow-file inspection does not prove that Actions ran successfully.
 
 Day 4 source verification passed in [GitHub Actions run 40833167948](https://github.com/krishna31102004/browser-proof/actions/runs/40833167948) on commit `0c94ba99caf1b04c39702d3fa065bb2cd8862209`.
 
 ## Scope status
 
-Verified here: M0 refund response loss, the AdminBench DOM observation/action race, the vulnerable/hardened regression comparison, five published curated evidence runs, and the static viewer/CI subset described above. Two fault types are verified; eight remain. There is no frozen 36-case benchmark and no measured 90% seeded-failure detection rate. The public deployment serves static recorded evidence only. ShopBench and Stagehand remain out of scope.
+Verified here: M0 refund response loss, the AdminBench DOM observation/action race, three additional controlled network faults, the vulnerable/hardened regression comparison, five published curated evidence runs, and the static viewer/CI subset described above. Five fault types are verified; five remain. There is no frozen 36-case benchmark and no measured 90% seeded-failure detection rate. The public deployment serves static recorded evidence only. ShopBench and Stagehand remain out of scope.

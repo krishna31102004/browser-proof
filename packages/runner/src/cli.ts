@@ -7,6 +7,7 @@ import { executeRun } from "./run.js";
 import { executeAdminRun, type AdminAgentPolicy, type AdminRunResult } from "./admin-run.js";
 import { validateAdminArtifacts } from "./admin-artifact-validation.js";
 import { exportDemoEvidence } from "./demo-export.js";
+import { executeNetworkFaultRun, validateNetworkFaultArtifacts, type NetworkFaultRunResult, type NetworkFaultType, type NetworkFaultSchedule } from "./network-fault-run.js";
 
 function argument(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -59,12 +60,75 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 async function runOnce(): Promise<number> {
   if (argument("--scenario") === "adminbench") return runAdminOnce();
+  if (argument("--scenario") === "supportdesk-network") return runNetworkFaultOnce();
   const mode = argument("--mode") as RunMode | undefined;
   const seed = argument("--seed");
   if ((mode !== "clean" && mode !== "faulted") || !seed) throw new Error("Usage: pnpm bp run --mode <clean|faulted> --seed <seed>");
   const run = await executeRun({ mode, seed });
   printRun(run.result, run.artifactDir);
   return isExpectedRun(run.result) && await validateRunArtifacts(run.artifactDir, run.result) ? 0 : 1;
+}
+
+async function runNetworkFaultOnce(): Promise<number> {
+  const fault = argument("--fault") as NetworkFaultType | undefined;
+  const mode = argument("--mode") as RunMode | undefined;
+  const seed = argument("--seed");
+  if (!fault || !["response_delay", "request_abort", "stale_api_response"].includes(fault) || (mode !== "clean" && mode !== "faulted") || !seed) {
+    throw new Error("Usage: pnpm bp run --scenario supportdesk-network --fault <response_delay|request_abort|stale_api_response> --mode <clean|faulted> --seed <seed>");
+  }
+  const run = await executeNetworkFaultRun({ fault, mode, seed });
+  const validation = await validateNetworkFaultArtifacts(run.artifactDir);
+  console.log(JSON.stringify({ runId: run.result.runId, fault, mode, status: run.result.status, taskCompleted: run.result.taskCompleted, effects: run.result.observedEffects.length, retries: run.result.agent.retries, triggered: run.result.fault.triggered, signature: run.result.contract?.signature ?? null, artifactDir: run.artifactDir, artifactValid: validation.valid, errors: validation.errors }, null, 2));
+  return validation.valid && (mode === "clean"
+    ? run.result.status === "passed" && run.result.taskCompleted && run.result.observedEffects.length === 1 && !run.result.fault.triggered
+    : fault === "request_abort"
+      ? run.result.status === "passed" && run.result.taskCompleted && run.result.fault.triggered && run.result.observedEffects.length === 1
+      : run.result.status === "contract_violation" && run.result.taskCompleted && run.result.fault.triggered && run.result.observedEffects.length === 2 && run.result.contract?.signature === "refund-at-most-once|A123|count>1") ? 0 : 1;
+}
+
+async function verifyNetworkFaults(): Promise<number> {
+  const types: NetworkFaultType[] = ["response_delay", "request_abort", "stale_api_response"];
+  const results: Array<{ fault: NetworkFaultType; cleanRunIds: string[]; faultedRunIds: string[]; reproductionRunIds: string[]; cleanEffects: number[]; faultedEffects: number[]; reproductionSignatures: Array<string | null>; artifactPaths: string[]; passes: number }> = [];
+  let allPassed = true;
+  for (const fault of types) {
+    const artifactPaths: string[] = [];
+    const cleanRuns = [] as Awaited<ReturnType<typeof executeNetworkFaultRun>>[];
+    const faultedRuns = [] as Awaited<ReturnType<typeof executeNetworkFaultRun>>[];
+    let passes = 0;
+    for (let index = 1; index <= 3; index += 1) cleanRuns.push(await executeNetworkFaultRun({ fault, mode: "clean", seed: `network-${fault}-clean-${index}` }));
+    for (let index = 1; index <= 3; index += 1) faultedRuns.push(await executeNetworkFaultRun({ fault, mode: "faulted", seed: `network-${fault}-faulted-${index}` }));
+    const source = faultedRuns[0]!;
+    const sourceSchedule = await readJson(resolve(source.artifactDir, "schedule.json"));
+    const saved = Array.isArray(sourceSchedule.faults) ? sourceSchedule.faults[0] as NetworkFaultSchedule | undefined : undefined;
+    if (!saved) throw new Error(`Missing saved ${fault} schedule in ${source.artifactDir}`);
+    const reproductions = [] as Awaited<ReturnType<typeof executeNetworkFaultRun>>[];
+    for (let index = 1; index <= 3; index += 1) reproductions.push(await executeNetworkFaultRun({ fault, mode: "faulted", seed: saved.seed, schedule: saved, sourceRunId: source.result.runId }));
+    const all = [...cleanRuns, ...faultedRuns, ...reproductions];
+    const uniqueRunIds = new Set(all.map(({ result }) => result.runId)).size === 9;
+    const uniqueEffectIds = all.flatMap(({ result }) => result.observedEffects.map(({ effectId }) => effectId));
+    const allEffectIdsUnique = new Set(uniqueEffectIds).size === uniqueEffectIds.length;
+    for (const run of all) {
+      artifactPaths.push(run.artifactDir);
+      const validation = await validateNetworkFaultArtifacts(run.artifactDir);
+      const expected = run.result.mode === "clean"
+        ? run.result.status === "passed" && run.result.taskCompleted && run.result.observedEffects.length === 1 && !run.result.fault.triggered
+        : fault === "request_abort"
+          ? run.result.status === "passed" && run.result.taskCompleted && run.result.observedEffects.length === 1 && run.result.fault.triggered
+          : run.result.status === "contract_violation" && run.result.taskCompleted && run.result.observedEffects.length === 2 && run.result.fault.triggered && run.result.contract?.signature === "refund-at-most-once|A123|count>1";
+      if (validation.valid && expected) passes += 1;
+    }
+    const normalized = (result: NetworkFaultRunResult) => result.contract?.signature ?? `${result.status}|effects=${result.observedEffects.length}`;
+    const signatures = reproductions.map(({ result }) => normalized(result));
+    const reproMatch = signatures.every((signature) => signature === normalized(source.result)) && reproductions.every(({ result }) => result.runId !== source.result.runId);
+    const typePassed = passes === 9 && uniqueRunIds && allEffectIdsUnique && reproMatch;
+    allPassed &&= typePassed;
+    results.push({ fault, cleanRunIds: cleanRuns.map(({ result }) => result.runId), faultedRunIds: faultedRuns.map(({ result }) => result.runId), reproductionRunIds: reproductions.map(({ result }) => result.runId), cleanEffects: cleanRuns.map(({ result }) => result.observedEffects.length), faultedEffects: faultedRuns.map(({ result }) => result.observedEffects.length), reproductionSignatures: signatures, artifactPaths, passes });
+  }
+  const verification = { schemaVersion: 1, campaign: "network-faults", createdAt: new Date().toISOString(), allPassed, results };
+  const reportPath = resolve("artifacts", `network-faults-verification-${randomUUID()}.json`);
+  await writeFile(reportPath, `${JSON.stringify(verification, null, 2)}\n`);
+  console.log(JSON.stringify({ campaign: "network-faults", allPassed, types: results.map(({ fault, cleanRunIds, faultedRunIds, reproductionRunIds, passes }) => ({ fault, clean: `${cleanRunIds.length}/3`, faulted: `${faultedRunIds.length}/3`, reproductions: `${reproductionRunIds.length}/3`, validatedTrials: `${passes}/9`, runIds: { cleanRunIds, faultedRunIds, reproductionRunIds } })), reportPath }, null, 2));
+  return allPassed ? 0 : 1;
 }
 
 async function reproduce(): Promise<number> {
@@ -77,6 +141,23 @@ async function reproduce(): Promise<number> {
   ]);
   if (schedule.mode !== "faulted" || !Array.isArray(schedule.faults)) throw new Error("Reproduction source must contain a saved faulted scenario/schedule");
   if (scenario.name === "adminbench-deactivate-record") return reproduceAdmin(sourceDir, schedule, originalResult, times);
+  if (scenario.name === "supportdesk-refund-network" || scenario.name === "supportdesk-stale-order-read") {
+    const saved = schedule.faults[0] as NetworkFaultSchedule | undefined;
+    if (!saved) throw new Error("Saved network fault schedule is missing");
+    const source = originalResult as { runId?: string; fault?: { type?: NetworkFaultType }; contract?: { signature?: string } | null };
+    if (!source.runId || source.fault?.type !== saved.type) throw new Error("Saved result and network fault schedule do not match");
+    let passes = 0;
+    const runs = [] as Awaited<ReturnType<typeof executeNetworkFaultRun>>[];
+    for (let index = 0; index < times; index += 1) {
+      runs.push(await executeNetworkFaultRun({ fault: saved.type, mode: "faulted", seed: saved.seed, schedule: saved, sourceRunId: source.runId }));
+    }
+    for (const run of runs) {
+      const valid = await validateNetworkFaultArtifacts(run.artifactDir);
+      if (valid.valid && run.result.runId !== source.runId && run.result.contract?.signature === source.contract?.signature && run.result.fault.triggered) passes += 1;
+    }
+    console.log(JSON.stringify({ reproduction: `${passes}/${times}`, sourceRunId: source.runId, fault: saved.type, runIds: runs.map(({ result }) => result.runId), signature: source.contract?.signature ?? null, artifacts: runs.map(({ artifactDir }) => artifactDir) }, null, 2));
+    return passes === times ? 0 : 1;
+  }
   if (scenario.name !== "supportdesk-refund") throw new Error("Unsupported reproduction scenario");
   const expectedSignature = (originalResult.contract as { signature?: string } | null)?.signature;
   if (expectedSignature !== "refund-at-most-once|A123|count>1") throw new Error("Original run does not contain the required normalized violation signature");
@@ -389,7 +470,7 @@ async function main(): Promise<void> {
   let code: number;
   if (command === "run") code = await runOnce();
   else if (command === "repro") code = await reproduce();
-  else if (command === "verify") code = scenario === "adminbench" ? await verifyAdminBench() : await verify();
+  else if (command === "verify") code = scenario === "adminbench" ? await verifyAdminBench() : scenario === "network-faults" ? await verifyNetworkFaults() : await verify();
   else if (command === "regression") code = await runRegression();
   else if (command === "export-demo") code = await exportDemo();
   else throw new Error("Usage: pnpm bp <run|repro|verify>");

@@ -18,7 +18,7 @@ jobs:
   verify:
     name: Local browser regressions and static viewer
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -105,6 +105,20 @@ jobs:
           ].join('\n');
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
           if (!expectedNegative || !expectedPositive || !requiredZero) process.exit(1);
+          NODE
+      - name: Run three-type real Chromium network-fault campaign
+        shell: bash
+        run: |
+          mkdir -p ci-evidence
+          pnpm bp verify --scenario network-faults | tee ci-evidence/network-faults.log
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const path = fs.readdirSync('artifacts').filter((name) => /^network-faults-verification-.+\.json$/.test(name)).sort().at(-1);
+          if (!path) throw new Error('Network fault campaign report was not produced');
+          const report = JSON.parse(fs.readFileSync(`artifacts/${path}`, 'utf8'));
+          const rows = report.results.map((item) => `| ${item.fault} | ${item.cleanRunIds.length}/3 | ${item.faultedRunIds.length}/3 | ${item.reproductionRunIds.length}/3 | ${item.passes}/9 |`).join('\n');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n## Prompt 07 network faults\n\n| Fault | Clean | Faulted | Fresh replay | Valid artifacts |\n|---|---:|---:|---:|---:|\n${rows}\n\nReport: \`artifacts/${path}\`\n`);
+          if (report.allPassed !== true || report.results.length !== 3 || report.results.some((item) => item.passes !== 9)) process.exit(1);
           NODE
       - name: Upload run and failure evidence
         if: always()

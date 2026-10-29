@@ -52,6 +52,53 @@ test("refund commits distinct effects per POST and observer returns run-scoped t
   assert.ok(body.effects.every((effect) => effect.entityId === "A123"));
 });
 
+test("run-scoped status GET is eligible before commit and refunded after the independently recorded commit", async () => {
+  const runId = `read-after-write-${randomUUID()}`;
+  await fetch(`${controlBase}/__browserproof/reset`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ runId })
+  });
+
+  const read = () => fetch(`${appBase}/api/orders/A123`, {
+    headers: { "X-BrowserProof-Run-Id": runId }
+  });
+  const before = await read();
+  assert.deepEqual(await before.json(), {
+    orderId: "A123",
+    status: "eligible_for_refund",
+    refundEligible: true,
+    amount: 42.5,
+    currency: "USD"
+  });
+
+  const commit = await fetch(`${appBase}/api/orders/A123/refund`, {
+    method: "POST",
+    headers: {
+      "X-BrowserProof-Run-Id": runId,
+      "X-BrowserProof-Action-Id": "refresh-action",
+      "X-BrowserProof-Request-Id": "refresh-request"
+    }
+  });
+  assert.equal(commit.status, 200);
+
+  const after = await read();
+  assert.deepEqual(await after.json(), {
+    orderId: "A123",
+    status: "refunded",
+    refundEligible: false,
+    amount: 42.5,
+    currency: "USD"
+  });
+  const observed = await fetch(`${controlBase}/__browserproof/effects?runId=${encodeURIComponent(runId)}`)
+    .then((response) => response.json()) as { effects: unknown[] };
+  assert.equal(observed.effects.length, 1);
+
+  // The existing M0 request intentionally omits run scope and remains the same initial eligibility read.
+  const legacyRead = await fetch(`${appBase}/api/orders/A123`).then((response) => response.json()) as { refundEligible: boolean };
+  assert.equal(legacyRead.refundEligible, true);
+});
+
 test("reset clears only the selected run and request IDs cannot duplicate effects", async () => {
   const runA = `test-${randomUUID()}`;
   const runB = `test-${randomUUID()}`;
@@ -97,5 +144,15 @@ test("browser app exposes no ledger and only confirms after a successful refund 
   assert.match(html, /data-testid="order-status"/);
   assert.match(html, /if \(!response\.ok \|\| body\.success !== true\)/);
   assert.match(html, /Refund successful/);
+  assert.doesNotMatch(html, /__browserproof\/effects/);
+});
+
+test("browser app exposes a real read-after-write refresh control without exposing the private observer", async () => {
+  const html = await fetch(appBase).then((response) => response.text());
+  assert.match(html, /id="refresh-order"[^>]*hidden/);
+  assert.match(html, /refresh-after-refund/);
+  assert.match(html, /Order status refreshed\. No refund is due\./);
+  assert.match(html, /Refund successful\. Refresh order status to confirm\./);
+  assert.match(html, /refreshButton\.addEventListener\('click', \(\) => void loadOrder\(\)\)/);
   assert.doesNotMatch(html, /__browserproof\/effects/);
 });

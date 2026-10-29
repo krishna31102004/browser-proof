@@ -59,6 +59,7 @@ const supportDeskHtml = `<!doctype html>
           <dt>Refund amount</dt><dd>$42.50</dd>
         </dl>
         <button id="refund" type="button" disabled>Refund</button>
+        <button id="refresh-order" type="button" hidden>Refresh order status</button>
         <p id="result" role="status" aria-live="polite"></p>
       </section>
     </main>
@@ -66,10 +67,28 @@ const supportDeskHtml = `<!doctype html>
       const button = document.querySelector('#refund');
       const result = document.querySelector('#result');
       const orderStatus = document.querySelector('#order-status');
+      const refreshButton = document.querySelector('#refresh-order');
+      const readAfterWrite = new URLSearchParams(location.search).get('workflow') === 'refresh-after-refund';
       const loadOrder = async () => {
         try {
           const response = await fetch('/api/orders/A123');
           const order = await response.json();
+          if (readAfterWrite) {
+            if (!response.ok || typeof order.refundEligible !== 'boolean') {
+              throw new Error('Order status could not be refreshed.');
+            }
+            orderStatus.textContent = order.refundEligible ? 'Eligible for refund' : 'Refunded';
+            button.disabled = !order.refundEligible;
+            if (order.refundEligible) {
+              result.textContent = 'Order status refreshed. Eligible for refund.';
+              result.dataset.kind = '';
+            } else {
+              result.textContent = 'Order status refreshed. No refund is due.';
+              result.dataset.kind = 'success';
+            }
+            refreshButton.hidden = true;
+            return;
+          }
           if (!response.ok || order.refundEligible !== true) {
             throw new Error('Order is not eligible for a refund.');
           }
@@ -100,16 +119,18 @@ const supportDeskHtml = `<!doctype html>
           if (!response.ok || body.success !== true) {
             throw new Error(body.error || 'Refund request failed.');
           }
-          orderStatus.textContent = 'Refunded';
-          result.textContent = 'Refund successful';
+          orderStatus.textContent = readAfterWrite ? 'Refund submitted; refresh status' : 'Refunded';
+          result.textContent = readAfterWrite ? 'Refund successful. Refresh order status to confirm.' : 'Refund successful';
           result.dataset.kind = 'success';
+          if (readAfterWrite) refreshButton.hidden = false;
         } catch (error) {
           result.textContent = error instanceof Error ? error.message : 'Refund request failed.';
           result.dataset.kind = 'error';
         } finally {
-          button.disabled = false;
+          button.disabled = readAfterWrite;
         }
       });
+      refreshButton.addEventListener('click', () => void loadOrder());
     </script>
   </body>
 </html>`;
@@ -142,10 +163,17 @@ function makeAppServer(states: Map<string, RunState>): Server {
       return;
     }
     if (request.method === "GET" && url.pathname === `/api/orders/${ORDER_ID}`) {
+      // The runner injects this header for new run-scoped status reads. M0's
+      // original no-header eligibility read remains unchanged and does not
+      // expose the private ledger to browser page code.
+      const runId = readRunId(request.headers["x-browserproof-run-id"]);
+      const refunded = runId
+        ? (runStates.get(runId)?.effects.some((effect) => effect.entityId === ORDER_ID) ?? false)
+        : false;
       sendJson(response, 200, {
         orderId: ORDER_ID,
-        status: "eligible_for_refund",
-        refundEligible: true,
+        status: refunded ? "refunded" : "eligible_for_refund",
+        refundEligible: !refunded,
         amount: REFUND_AMOUNT,
         currency: "USD"
       });
