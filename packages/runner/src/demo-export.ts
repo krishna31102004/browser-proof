@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { ARTIFACT_SCHEMA_VERSION, type AdminBenchFaultSchedule, type AdminRecordEffect, type AdminRecordSnapshot, type RunEvent, type RunResult } from "@browserproof/contracts";
+import { ARTIFACT_SCHEMA_VERSION, validateFaultSchedule, type AdminBenchFaultSchedule, type AdminRecordEffect, type AdminRecordSnapshot, type RunEvent, type RunResult } from "@browserproof/contracts";
 import { executeAdminRun, type AdminAgentPolicy, type AdminRunResult } from "./admin-run.js";
 import { validateAdminArtifacts } from "./admin-artifact-validation.js";
 import { executeRun } from "./run.js";
@@ -138,6 +138,8 @@ export async function validateSupportSourceArtifact(directory: string, mode: "cl
     if (schedule.faults === undefined || !Array.isArray(schedule.faults) || schedule.faults.length !== 0 || result.fault.armed || result.fault.triggered) throw new Error("SupportDesk clean source unexpectedly contains an armed fault");
   } else {
     const fault = (schedule.faults as unknown[] | undefined)?.[0];
+    if (!validateFaultSchedule(fault, { scenarioId: result.scenarioId, seed: String(schedule.seed) })) throw new Error("SupportDesk saved fault schedule is invalid");
+    const savedFault = fault as Record<string, unknown>;
     const firstEffect = effects[0];
     const firstRequest = events.find((event) => event.type === "network.request" && event.requestId === firstEffect?.requestId && event.actionId === firstEffect?.actionId);
     const firstCommitSequence = eventIndex("backend.commit_confirmed", (event) => event.payload.effectId === firstEffect?.effectId &&
@@ -149,8 +151,8 @@ export async function validateSupportSourceArtifact(directory: string, mode: "cl
     const retrySequence = eventIndex("agent.retry_reason");
     const secondRequestSequence = eventIndex("network.request", (event) => event.requestId === effects[1]?.requestId);
     const secondCommitSequence = eventIndex("backend.commit_confirmed", (event) => event.payload.effectId === effects[1]?.effectId);
-    if (!isRecord(fault) || fault.type !== "commit_then_response_lost" || fault.trigger !== "first_matching_request_after_agent_action" ||
-        fault.count !== 1 || fault.target !== "POST /api/orders/A123/refund" || !result.fault.armed || !result.fault.triggered ||
+    if (!isRecord(savedFault) || savedFault.type !== "commit_then_response_lost" || savedFault.trigger !== "first_matching_request_after_agent_action" ||
+        savedFault.count !== 1 || savedFault.target !== "POST /api/orders/A123/refund" || !result.fault.armed || !result.fault.triggered ||
         !result.fault.upstreamCommitted || result.fault.browserReceivedSuccess !== false ||
         !firstRequest || !(firstCommitSequence >= 0 && firstCommitSequence < triggerSequence && triggerSequence < failureSequence) ||
         !(failureSequence < retrySequence && retrySequence < secondRequestSequence && secondRequestSequence < secondCommitSequence) ||

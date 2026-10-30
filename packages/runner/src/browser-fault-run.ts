@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { chromium, type Page, type Route } from "playwright";
 import {
-  ARTIFACT_SCHEMA_VERSION, evaluateAdminCorrectRecord, evaluateRefundAtMostOnce,
+  ARTIFACT_SCHEMA_VERSION, evaluateAdminCorrectRecord, evaluateAdminWorkflowContract, evaluateRefundAtMostOnce, evaluateRefundWorkflowContract, FAULT_SCHEDULE_REGISTRY,
+  validateFaultSchedule,
   type AdminRecordEffect, type AdminRecordSnapshot, type BrowserStateAgentPolicy,
   type BrowserStateFaultSchedule, type BrowserStateFaultType, type BrowserStateScenarioId,
   type RefundEffect, type ResultStatus, type RunMode,
@@ -60,16 +61,10 @@ export function createBrowserStateSchedule(fault: BrowserStateFaultType, seed: s
 }
 
 export function validateBrowserStateSchedule(value: unknown, expectedFault?: BrowserStateFaultType, seed?: string): value is BrowserStateFaultSchedule {
-  if (!isRecord(value) || value.schemaVersion !== ARTIFACT_SCHEMA_VERSION || typeof value.seed !== "string" || !value.seed || typeof value.scheduleId !== "string" || value.scheduleId !== `${String(value.type)}-${value.seed}` || value.occurrenceCount !== 1) return false;
-  if (expectedFault && value.type !== expectedFault || seed && value.seed !== seed) return false;
-  if (value.type === "delayed_render") return value.scenarioId === "adminbench-delayed-render-v1" && isRecord(value.target) && value.target.app === "adminbench" && value.target.recordId === "beacon" && value.target.dataPath === "/api/records" && exactKeys(value.target, ["app", "recordId", "dataPath"]) && value.trigger === "records_fetched_before_dom_insertion" && value.release === "after_vulnerable_wait_failure_or_hardened_waiting_observation" && value.vulnerableWaitMs === 300 && exactKeys(value, ["schemaVersion", "scheduleId", "scenarioId", "type", "seed", "target", "trigger", "occurrenceCount", "release", "vulnerableWaitMs"]);
-  if (value.type === "session_expire") return value.scenarioId === "supportdesk-session-expire-v1" && isRecord(value.target) && value.target.method === "POST" && value.target.path === "/api/orders/A123/refund" && exactKeys(value.target, ["method", "path"]) && value.trigger === "after_authenticated_observation_before_refund_action" && value.invalidation === "exact_observed_server_session" && exactKeys(value, ["schemaVersion", "scheduleId", "scenarioId", "type", "seed", "target", "trigger", "occurrenceCount", "invalidation"]);
-  if (value.type === "navigation_abort") return value.scenarioId === "supportdesk-navigation-abort-v1" && isRecord(value.target) && value.target.method === "GET" && value.target.path === "/refund?workflow=navigation-refund" && value.target.resourceType === "document" && value.target.mainFrame === true && exactKeys(value.target, ["method", "path", "resourceType", "mainFrame"]) && value.trigger === "first_agent_main_frame_navigation" && value.abortCode === "failed" && exactKeys(value, ["schemaVersion", "scheduleId", "scenarioId", "type", "seed", "target", "trigger", "occurrenceCount", "abortCode"]);
-  return false;
+  if (!validateFaultSchedule(value, { ...(seed ? { seed } : {}) })) return false;
+  return ["delayed_render", "session_expire", "navigation_abort"].includes((value as BrowserStateFaultSchedule).type) && (!expectedFault || (value as BrowserStateFaultSchedule).type === expectedFault);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
-function exactKeys(value: Record<string, unknown>, keys: string[]): boolean { return Object.keys(value).sort().join("|") === [...keys].sort().join("|"); }
 const json = async <T>(url: string, init?: RequestInit): Promise<T> => { const response = await fetch(url, { ...init, signal: AbortSignal.timeout(2500) }); if (!response.ok) throw new Error(`Fixture control request returned HTTP ${response.status}`); return await response.json() as T; };
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
 
@@ -424,6 +419,12 @@ export async function validateBrowserStateArtifacts(artifactDir: string): Promis
       const eventPhase = faultEvent.payload.phase ?? faultEvent.payload.boundary;
       if (faultEvent.payload.type !== result.fault.type || result.fault.occurrenceCount !== 1 || !result.fault.phase || eventPhase !== result.fault.phase) errors.push("fault event type/phase/occurrence does not match the persisted result");
     }
+    const expectedFaultPhase = FAULT_SCHEDULE_REGISTRY.find((binding) => binding.scenarioId === result.scenarioId)?.expectedPhase ?? null;
+    const faultEvidence = { required: result.mode === "faulted", armed: result.fault.armed, triggered: result.fault.triggered, triggerCount: result.fault.occurrenceCount, expectedCount: result.mode === "faulted" ? 1 : 0, phase: result.fault.phase, expectedPhase: result.mode === "faulted" ? expectedFaultPhase : null };
+    const sharedEvaluation = result.scenarioId === "adminbench-delayed-render-v1"
+      ? evaluateAdminWorkflowContract({ effects: result.observedEffects as AdminRecordEffect[], finalRecords: result.finalAdminRecords, taskCompleted: result.taskCompleted, observerStatus: result.observerStatus, runId: result.runId, executionStatus: result.status, fault: faultEvidence })
+      : evaluateRefundWorkflowContract({ effects: result.observedEffects as RefundEffect[], taskCompleted: result.taskCompleted, observerStatus: result.observerStatus, runId: result.runId, executionStatus: result.status, fault: faultEvidence });
+    if (sharedEvaluation.status !== result.status || sharedEvaluation.normalizedFailureSignature !== result.safetyContract?.signature) errors.push("shared browser-state assessment disagrees with result/contract");
     const triggerIndex = events.findIndex((event) => event.type === "fault.triggered"); const finalIndex = events.findIndex((event) => event.type === "run.completed");
     if (triggerIndex >= 0 && finalIndex <= triggerIndex) errors.push("fault trigger occurs after completion");
     const boundaryCaptures = events.filter((event) => event.type === "screenshot.at_fault_boundary_captured");

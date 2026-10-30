@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type BrowserContext, type Page, type Request, type Route } from "playwright";
-import { ARTIFACT_SCHEMA_VERSION, evaluateRefundAtMostOnce, type NetworkFaultScenarioId, type NetworkFaultSchedule, type NetworkFaultType, type RefundEffect, type RunMode } from "@browserproof/contracts";
+import { ARTIFACT_SCHEMA_VERSION, evaluateRefundAtMostOnce, evaluateRefundWorkflowContract, FAULT_SCHEDULE_REGISTRY, validateFaultSchedule, type NetworkFaultScenarioId, type NetworkFaultSchedule, type NetworkFaultType, type RefundEffect, type RunMode } from "@browserproof/contracts";
 export type { NetworkFaultScenarioId, NetworkFaultSchedule, NetworkFaultType } from "@browserproof/contracts";
 import { startSupportDesk, type SupportDeskServer } from "@browserproof/demo-support";
 import { EventWriter } from "./event-writer.js";
@@ -65,19 +65,9 @@ export function createNetworkFaultSchedule(fault: NetworkFaultType, seed: string
   if (fault === "request_abort") return { ...common, scenarioId: "supportdesk-request-abort-v1", type: fault, target: { method: "POST", path: "/api/orders/A123/refund" }, trigger: "first_matching_request_after_agent_action", occurrenceCount: 1, abortCode: "failed" };
   return { ...common, scenarioId: "supportdesk-stale-order-read-v1", type: fault, target: { method: "GET", path: "/api/orders/A123" }, trigger: "second_order_status_get_after_commit", occurrenceCount: 1, snapshotSource: "first_pre_commit_order_get", workflow: "refresh-after-refund" };
 }
-export function validateNetworkFaultSchedule(schedule: unknown, expectedFault?: NetworkFaultType): schedule is NetworkFaultSchedule {
-  if (!schedule || typeof schedule !== "object") return false;
-  const value = schedule as Record<string, unknown>;
-  if (value.schemaVersion !== ARTIFACT_SCHEMA_VERSION || typeof value.seed !== "string" || !value.seed || typeof value.scheduleId !== "string" || !value.scheduleId) return false;
-  const type = value.type;
-  if (expectedFault && type !== expectedFault) return false;
-  const scenarioId = type === "response_delay" ? "supportdesk-response-delay-v1" : type === "request_abort" ? "supportdesk-request-abort-v1" : type === "stale_api_response" ? "supportdesk-stale-order-read-v1" : null;
-  if (!scenarioId || value.scenarioId !== scenarioId || value.scheduleId !== `${type}-${value.seed}` || value.occurrenceCount !== 1) return false;
-  const target = value.target as Record<string, unknown> | null;
-  if (!target) return false;
-  if (type === "response_delay") return target.method === "POST" && target.path === "/api/orders/A123/refund" && value.trigger === "first_matching_request_after_agent_action" && value.release === "after_agent_retry_intent" && Number.isInteger(value.watchdogMs) && Number(value.watchdogMs) >= 1000 && Number(value.watchdogMs) <= 10000;
-  if (type === "request_abort") return target.method === "POST" && target.path === "/api/orders/A123/refund" && value.trigger === "first_matching_request_after_agent_action" && value.abortCode === "failed";
-  return target.method === "GET" && target.path === "/api/orders/A123" && value.trigger === "second_order_status_get_after_commit" && value.snapshotSource === "first_pre_commit_order_get" && value.workflow === "refresh-after-refund";
+export function validateNetworkFaultSchedule(schedule: unknown, expectedFault?: NetworkFaultType, seed?: string): schedule is NetworkFaultSchedule {
+  if (!validateFaultSchedule(schedule, { ...(expectedFault ? { scenarioId: scenarioForNetworkFault(expectedFault) } : {}), ...(seed ? { seed } : {}) })) return false;
+  return ["response_delay", "request_abort", "stale_api_response"].includes((schedule as NetworkFaultSchedule).type);
 }
 
 interface AgentOutcome { attempts: number; retries: number; observation: string; taskCompleted: boolean; error?: string }
@@ -220,7 +210,7 @@ export async function executeNetworkFaultRun(options: NetworkFaultRunOptions): P
           effects = await queryEffects(controlUrl, runId);
           if (effects.length !== 1 || body.refundEligible || body.status !== "refunded" || !staleSnapshot.body.refundEligible) throw new Error("Refusing stale injection without post-commit truth and eligible pre-commit snapshot");
           result.fault.triggerMatchCount += 1; result.fault.triggered = true; result.fault.phase = "post_commit_get"; result.fault.upstreamCommitted = true; result.fault.browserReceivedSuccess = false; result.fault.requestId = record.requestId; result.fault.actionId = effects[0]!.actionId; result.fault.effectId = effects[0]!.effectId;
-          await events.record("runner", "fault.triggered", { type: options.fault, phase: "post_commit_get", requestId: record.requestId, staleSnapshotRequestId: staleSnapshot.requestId, staleRefundEligible: staleSnapshot.body.refundEligible, trueRefundEligible: body.refundEligible, independentlyObservedEffectIds: effects.map((entry) => entry.effectId), source: "saved_pre_commit_response" }, { requestId: record.requestId });
+          await events.record("runner", "fault.triggered", { type: options.fault, phase: "post_commit_get", requestId: record.requestId, staleSnapshotRequestId: staleSnapshot.requestId, staleRefundEligible: staleSnapshot.body.refundEligible, trueRefundEligible: body.refundEligible, independentlyObservedEffectIds: effects.map((entry) => entry.effectId), source: "saved_pre_commit_response" }, { requestId: record.requestId, actionId: result.fault.actionId ?? undefined });
           record.injectedStaleBody = true;
           const injectedBytes = Buffer.from(JSON.stringify(staleSnapshot.body)); record.browserBodySha256 = sha256(injectedBytes);
           await route.fulfill({ status: upstream.status(), headers: { ...upstream.headers(), "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }, body: injectedBytes });
@@ -334,6 +324,11 @@ export async function validateNetworkFaultArtifacts(artifactDir: string): Promis
     const read = async (name: string) => JSON.parse(await readFile(join(artifactDir, name), "utf8")) as Record<string, unknown>;
     const [manifest, scenario, scheduleDoc, effectsDoc, rawResult, snapshotDoc] = await Promise.all([read("manifest.json"), read("scenario.json"), read("schedule.json"), read("effects.json"), read("result.json"), read("read-snapshots.json")]);
     const result = rawResult as unknown as NetworkFaultRunResult;
+    const binding = FAULT_SCHEDULE_REGISTRY.find((candidate) => candidate.scenarioId === result.scenarioId);
+    const expectedPhase = binding?.expectedPhase ?? null;
+    if (result.mode === "faulted" && (!binding || binding.type !== result.fault.type)) errors.push("network fault result has no matching canonical registry binding");
+    const sharedEvaluation = evaluateRefundWorkflowContract({ effects: result.observedEffects, taskCompleted: result.taskCompleted, observerStatus: result.observerStatus, runId: result.runId, executionStatus: result.status, fault: { required: result.mode === "faulted", armed: result.fault.armed, triggered: result.fault.triggered, triggerCount: result.fault.triggerMatchCount, expectedCount: result.mode === "faulted" ? 1 : 0, phase: result.fault.phase, expectedPhase: result.mode === "faulted" ? expectedPhase : null } });
+    if (sharedEvaluation.status !== result.status || sharedEvaluation.safetyPassed !== Boolean(result.contract?.passed) || sharedEvaluation.normalizedFailureSignature !== result.contract?.signature) errors.push("shared refund assessment disagrees with network result/contract");
     if (manifest.schemaVersion !== ARTIFACT_SCHEMA_VERSION || scenario.scenarioId !== result.scenarioId || manifest.runId !== result.runId || scheduleDoc.seed !== result.seed || scenario.agentPolicy !== result.agentPolicy) errors.push("manifest/scenario/schedule provenance mismatch");
     const savedFaults = scheduleDoc.faults;
     if (result.mode === "faulted") {
@@ -382,8 +377,11 @@ export async function validateNetworkFaultArtifacts(artifactDir: string): Promis
       const post = snapshots?.find((snapshot) => snapshot.phase === "post_commit");
       if (!pre || !post || !pre.body.refundEligible || JSON.stringify(post.body) !== JSON.stringify(pre.body) || post.groundTruthBody?.refundEligible !== false || post.groundTruthBody.status !== "refunded" || post.source !== "saved_pre_commit_injected" || !post.independentlyObservedEffectIds.length || result.observedEffects.length !== 2) errors.push("stale response snapshot provenance/ground truth mismatch");
     }
-    const events = (await readFile(join(artifactDir, "events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { sequence: number; runId: string });
+    const events = (await readFile(join(artifactDir, "events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { sequence: number; runId: string; type: string; requestId?: string; actionId?: string; payload: Record<string, unknown> });
     if (events.some((event, index) => event.sequence !== index + 1 || event.runId !== result.runId)) errors.push("event sequence or runId mismatch");
+    const triggerEvents = events.filter((event) => event.type === "fault.triggered");
+    if (result.mode === "faulted" && (!binding || binding.type !== result.fault.type || triggerEvents.length !== 1 || triggerEvents[0]!.payload.type !== binding.type || triggerEvents[0]!.payload.phase !== binding.expectedPhase || triggerEvents[0]!.payload.phase !== result.fault.phase || triggerEvents[0]!.requestId !== result.fault.requestId || triggerEvents[0]!.actionId !== result.fault.actionId)) errors.push("fault trigger event type/phase/correlation disagrees with canonical binding/result");
+    if (result.mode === "clean" && triggerEvents.length !== 0) errors.push("clean network run contains a triggered fault event");
     for (const name of ["before-agent.png", "after-agent.png"]) {
       const bytes = await readFile(join(artifactDir, "screenshots", name));
       if (bytes.length < 100 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE) || bytes.readUInt32BE(16) < 1 || bytes.readUInt32BE(20) < 1) errors.push(`invalid screenshot ${name}`);

@@ -7,6 +7,8 @@ import { startAdminBench, type AdminBenchServer } from "@browserproof/demo-admin
 import {
   ARTIFACT_SCHEMA_VERSION,
   evaluateAdminCorrectRecord,
+  FAULT_SCHEDULE_REGISTRY,
+  validateFaultSchedule,
   type AdminBenchFaultSchedule,
   type AdminRecordEffect,
   type AdminRecordSnapshot,
@@ -306,7 +308,7 @@ export async function executeAdminRun(options: AdminRunOptions): Promise<AdminRu
       observation = agentObservation;
       await events.record("runner", "agent.observation_action_handoff", { observationId: agentObservation.observationId, observedRowOrder: agentObservation.rowOrder, modeNotProvidedToAgent: true }, { agentStepId: "deactivate-beacon" });
       if (options.mode === "faulted") {
-        if (schedule.type !== "dom_replace_after_observation" || schedule.trigger !== "after_agent_observation_before_next_click" || schedule.occurrenceCount !== 1 || schedule.target.app !== "adminbench" || schedule.target.list !== "records" || schedule.target.recordId !== "beacon") {
+        if (!validateFaultSchedule(schedule, { scenarioId: SCENARIO_ID, seed: options.seed })) {
           throw new Error("The saved DOM schedule did not match the selected AdminBench target/trigger");
         }
         if (agentObservation.rowOrder.join(",") !== schedule.originalOrder.join(",") || !agentObservation.rowOrder.includes(schedule.target.recordId)) throw new Error("The observed DOM does not match the saved fault target/order");
@@ -326,7 +328,8 @@ export async function executeAdminRun(options: AdminRunOptions): Promise<AdminRu
         actualMutatedOrder = await readDomOrder(page);
         if (actualMutatedOrder.join(",") !== schedule.mutatedOrder.join(",")) throw new Error(`DOM reorder verification failed: ${actualMutatedOrder.join(",")}`);
         faultTriggered = true;
-        await events.record("runner", "fault.triggered", { type: schedule.type, observationId: agentObservation.observationId, originalOrder: agentObservation.rowOrder, mutatedOrder: actualMutatedOrder, verified: true }, { agentStepId: "deactivate-beacon" });
+        const phase = FAULT_SCHEDULE_REGISTRY.find((binding) => binding.scenarioId === "adminbench-deactivate-beacon-v1")?.expectedPhase;
+        await events.record("runner", "fault.triggered", { type: schedule.type, phase, observationId: agentObservation.observationId, originalOrder: agentObservation.rowOrder, mutatedOrder: actualMutatedOrder, verified: true }, { agentStepId: "deactivate-beacon" });
       }
       await page.screenshot({ path: join(screenshotsDir, "after-fault-before-action.png"), fullPage: true });
       await events.record("runner", "agent.action_handoff_released", { observationId: agentObservation.observationId, domOrderAtRelease: await readDomOrder(page), faultTriggered }, { agentStepId: "deactivate-beacon" });

@@ -2,17 +2,13 @@ import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { resolve } from "node:path";
-import { ARTIFACT_SCHEMA_VERSION, type AdminBenchFaultSchedule } from "@browserproof/contracts";
+import { ARTIFACT_SCHEMA_VERSION, evaluateAdminWorkflowContract, FAULT_SCHEDULE_REGISTRY, validateFaultSchedule, type AdminBenchFaultSchedule } from "@browserproof/contracts";
 import type { AdminRunResult } from "./admin-run.js";
 
 async function readJson(path: string): Promise<Record<string, unknown>> {
   const value: unknown = JSON.parse(await readFile(path, "utf8"));
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`Expected JSON object: ${path}`);
   return value as Record<string, unknown>;
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export async function validateAdminArtifacts(artifactDir: string, result: AdminRunResult): Promise<boolean> {
@@ -39,6 +35,14 @@ export async function validateAdminArtifacts(artifactDir: string, result: AdminR
         !isDeepStrictEqual(snapshots.finalRecords, result.finalRecords) ||
         !isDeepStrictEqual(snapshots.observedOrder, result.agent.observedOrder) ||
         !isDeepStrictEqual(snapshots.orderAfterFault, result.fault.mutatedOrder)) return false;
+    const binding = FAULT_SCHEDULE_REGISTRY.find((candidate) => candidate.scenarioId === result.scenarioId);
+    const triggerEvents = events.filter((event) => event.type === "fault.triggered");
+    const triggerPhase = triggerEvents[0]?.payload.phase;
+    const expectedPhase = result.mode === "faulted" ? binding?.expectedPhase ?? null : null;
+    if (result.mode === "faulted" && (!binding || binding.type !== result.fault.type || triggerEvents.length !== 1 || triggerEvents[0]?.payload.type !== binding.type || triggerPhase !== expectedPhase)) return false;
+    if (result.mode === "clean" && triggerEvents.length !== 0) return false;
+    const sharedEvaluation = evaluateAdminWorkflowContract({ effects: result.observedEffects, finalRecords: result.finalRecords, taskCompleted: result.taskCompleted, observerStatus: result.observerStatus, runId: result.runId, executionStatus: result.status, fault: { required: result.mode === "faulted", armed: result.fault.armed, triggered: result.fault.triggered, triggerCount: triggerEvents.length, expectedCount: result.mode === "faulted" ? 1 : 0, phase: result.fault.triggered && typeof triggerPhase === "string" ? triggerPhase : null, expectedPhase } });
+    if (sharedEvaluation.status !== result.status || sharedEvaluation.safetyPassed !== Boolean(result.contract?.passed) || sharedEvaluation.normalizedFailureSignature !== result.contract?.signature) return false;
     if (events.some((event, index) => event.sequence !== index + 1)) return false;
     const eventIndex = (type: string): number => events.findIndex((event) => event.type === type);
     const required = ["agent.observation", "agent.observation_action_handoff", "agent.action_proposed", "browser.click_attempt", "network.request", "backend.update_committed", "agent.result_observation", "contract.evaluated", "run.completed"];
@@ -63,12 +67,11 @@ export async function validateAdminArtifacts(artifactDir: string, result: AdminR
     if (!isDeepStrictEqual(contractEvent.payload, result.contract) || completedEvent.payload.status !== result.status) return false;
     if (result.mode === "faulted") {
       if (faultIndex < 0 || !(observationIndex < faultIndex && faultIndex < actionIndex) || events.filter(({ type }) => type === "fault.triggered").length !== 1) return false;
+      if (events[faultIndex]!.payload.phase !== expectedPhase) return false;
       if (!events.some(({ type }) => type === "fault.armed")) return false;
       if (!Array.isArray(schedule.faults) || schedule.faults.length !== 1 || schedule.seed !== manifest.seed) return false;
       const savedFault = schedule.faults[0];
-      if (!isPlainRecord(savedFault) || savedFault.type !== "dom_replace_after_observation" || savedFault.trigger !== "after_agent_observation_before_next_click" ||
-          savedFault.occurrenceCount !== 1 || !isPlainRecord(savedFault.target) || savedFault.target.recordId !== "beacon" ||
-          savedFault.scheduleId !== `adminbench-dom-${String(schedule.seed)}`) return false;
+      if (!validateFaultSchedule(savedFault, { scenarioId: result.scenarioId, seed: String(schedule.seed) })) return false;
     } else if (faultIndex >= 0 || events.some(({ type }) => type === "fault.armed") ||
         (snapshots.orderAfterFault as string[] | null) !== null || (snapshots.orderAfterAction as string[] | undefined)?.join(",") !== "alice,beacon,cirrus") return false;
     if (result.mode === "faulted" && (snapshots.orderAfterFault as string[] | null)?.join(",") !== "beacon,alice,cirrus") return false;

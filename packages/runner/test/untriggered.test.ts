@@ -1,7 +1,8 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { executeRun } from "../src/run.js";
+import { validateRunArtifacts } from "../src/run-artifact-validation.js";
 
 describe("untriggered schedule and evidence packaging", () => {
   it("records a never-matching armed fault as injection_error and preserves fresh-run artifacts", async () => {
@@ -26,5 +27,27 @@ describe("untriggered schedule and evidence packaging", () => {
     await expect(access(join(run.artifactDir, "screenshots", "before-agent.png"))).resolves.toBeUndefined();
     await expect(access(join(run.artifactDir, "screenshots", "after-agent.png"))).resolves.toBeUndefined();
     expect((await readFile(join(run.artifactDir, "trace.zip"))).subarray(0, 2).toString()).toBe("PK");
+  }, 30000);
+
+  it("rejects missing or altered M0 trigger phase evidence", async () => {
+    const run = await executeRun({ mode: "faulted", seed: `phase-${Date.now()}` });
+    expect(await validateRunArtifacts(run.artifactDir, run.result)).toBe(true);
+    const path = join(run.artifactDir, "events.jsonl");
+    const original = await readFile(path, "utf8");
+    const events = original.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    const trigger = events.find((event) => event.type === "fault.triggered")!;
+    const payload = trigger.payload as Record<string, unknown>;
+    delete payload.phase;
+    await writeFile(path, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+    expect(await validateRunArtifacts(run.artifactDir, run.result)).toBe(false);
+    payload.phase = "before_upstream";
+    await writeFile(path, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+    expect(await validateRunArtifacts(run.artifactDir, run.result)).toBe(false);
+    await writeFile(path, original);
+    payload.phase = "after_upstream_commit_before_browser_response";
+    payload.type = "request_abort";
+    await writeFile(path, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+    expect(await validateRunArtifacts(run.artifactDir, run.result)).toBe(false);
+    await writeFile(path, original);
   }, 30000);
 });

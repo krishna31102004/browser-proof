@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { ARTIFACT_SCHEMA_VERSION, type AdminBenchFaultSchedule, type FaultSchedule, type RunMode, type RunResult } from "@browserproof/contracts";
+import { ARTIFACT_SCHEMA_VERSION, validateFaultSchedule, type AdminBenchFaultSchedule, type FaultSchedule, type RunMode, type RunResult } from "@browserproof/contracts";
 import { executeRun } from "./run.js";
 import { executeAdminRun, type AdminAgentPolicy, type AdminRunResult } from "./admin-run.js";
 import { validateAdminArtifacts } from "./admin-artifact-validation.js";
@@ -11,6 +11,7 @@ import { executeNetworkFaultRun, validateNetworkFaultArtifacts, type NetworkFaul
 import { BROWSER_STATE_TYPES, browserStateSignature, createBrowserStateSchedule, executeBrowserStateRun, validateBrowserStateArtifacts, validateBrowserStateSchedule, type BrowserStateAgentPolicy, type BrowserStateFaultSchedule, type BrowserStateFaultType, type BrowserStateRunResult } from "./browser-fault-run.js";
 import { contextFaultReproductionIdsAreFresh, createContextFaultSchedule, executeContextFaultRun, normalizedContextFaultSignature, validateContextFaultArtifacts, validateContextFaultSchedule, type ContextAgentPolicy, type ContextFaultResult, type ContextFaultType, type ContextFaultSchedule } from "./context-fault-run.js";
 import { createShopSchedule, executeShopRun, shopSignature, validateShopArtifacts, validateShopSchedule, type ShopRunResult } from "./shop-run.js";
+import { validateRunArtifacts } from "./run-artifact-validation.js";
 import type { ShopAgentPolicy, ShopBenchFaultSchedule, ShopWorkflowId } from "@browserproof/contracts";
 
 function argument(name: string, fallback?: string): string | undefined {
@@ -26,30 +27,6 @@ function isExpectedRun(result: RunResult): boolean {
   if (result.observerStatus !== "complete" || !result.contract || !result.taskCompleted) return false;
   if (result.mode === "clean") return result.status === "passed" && result.observedEffects.length === 1 && result.agent.attempts === 1 && result.agent.retries === 0 && result.fault.browserReceivedSuccess === true;
   return result.status === "contract_violation" && result.observedEffects.length === 2 && new Set(result.observedEffects.map(({ effectId }) => effectId)).size === 2 && result.agent.attempts === 2 && result.agent.retries === 1 && result.fault.triggered && result.fault.upstreamCommitted && result.fault.browserReceivedSuccess === false && result.contract.signature === "refund-at-most-once|A123|count>1";
-}
-
-async function validateRunArtifacts(artifactDir: string, result: RunResult): Promise<boolean> {
-  try {
-    const [manifest, scenario, schedule, effects, savedResult, eventText, trace, before, after] = await Promise.all([
-      readJson(resolve(artifactDir, "manifest.json")), readJson(resolve(artifactDir, "scenario.json")),
-      readJson(resolve(artifactDir, "schedule.json")), readJson(resolve(artifactDir, "effects.json")),
-      readJson(resolve(artifactDir, "result.json")), readFile(resolve(artifactDir, "events.jsonl"), "utf8"),
-      readFile(resolve(artifactDir, "trace.zip")), readFile(resolve(artifactDir, "screenshots/before-agent.png")),
-      readFile(resolve(artifactDir, "screenshots/after-agent.png")),
-    ]);
-    const events = eventText.trim().split("\n").map((line) => JSON.parse(line) as { sequence: number; type: string });
-    if (manifest.runId !== result.runId || scenario.scenarioId !== result.scenarioId || schedule.mode !== result.mode || savedResult.runId !== result.runId) return false;
-    if (!Array.isArray(effects.effects) || effects.effects.length !== result.observedEffects.length) return false;
-    if (events.some((event, index) => event.sequence !== index + 1)) return false;
-    const types = new Set(events.map(({ type }) => type));
-    for (const required of ["agent.observation", "browser.click_attempt", "network.request", "backend.commit_confirmed", "contract.evaluated", "run.completed"]) if (!types.has(required)) return false;
-    if (result.mode === "faulted" && (!types.has("fault.armed") || !types.has("fault.triggered") || !types.has("network.request_failed"))) return false;
-    if (trace.subarray(0, 2).toString() !== "PK" || before.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a" || after.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") return false;
-    execFileSync("unzip", ["-t", resolve(artifactDir, "trace.zip")], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function readJson(path: string): Promise<Record<string, unknown>> {
@@ -345,7 +322,7 @@ async function verifyNetworkFaults(): Promise<number> {
     allPassed &&= typePassed;
     results.push({ fault, cleanRunIds: cleanRuns.map(({ result }) => result.runId), faultedRunIds: faultedRuns.map(({ result }) => result.runId), reproductionRunIds: reproductions.map(({ result }) => result.runId), cleanEffects: cleanRuns.map(({ result }) => result.observedEffects.length), faultedEffects: faultedRuns.map(({ result }) => result.observedEffects.length), reproductionSignatures: signatures, artifactPaths, passes });
   }
-  const verification = { schemaVersion: 1, campaign: "network-faults", createdAt: new Date().toISOString(), allPassed, results };
+  const verification = { schemaVersion: 1, campaign: "network-faults", baseCommit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(), createdAt: new Date().toISOString(), allPassed, results };
   const reportPath = resolve("artifacts", `network-faults-verification-${randomUUID()}.json`);
   await writeFile(reportPath, `${JSON.stringify(verification, null, 2)}\n`);
   console.log(JSON.stringify({ campaign: "network-faults", allPassed, types: results.map(({ fault, cleanRunIds, faultedRunIds, reproductionRunIds, passes }) => ({ fault, clean: `${cleanRunIds.length}/3`, faulted: `${faultedRunIds.length}/3`, reproductions: `${reproductionRunIds.length}/3`, validatedTrials: `${passes}/9`, runIds: { cleanRunIds, faultedRunIds, reproductionRunIds } })), reportPath }, null, 2));
@@ -487,7 +464,7 @@ async function verify(): Promise<number> {
     const sourceFaults = sourceSchedule.faults;
     if (!Array.isArray(sourceFaults) || sourceFaults.length !== 1 || typeof sourceFaults[0] !== "object" || sourceFaults[0] === null) throw new Error("Verification source does not contain one saved fault schedule");
     const savedSchedule = sourceFaults[0] as FaultSchedule;
-    if (savedSchedule.type !== "commit_then_response_lost" || savedSchedule.target !== "POST /api/orders/A123/refund" || savedSchedule.trigger !== "first_matching_request_after_agent_action" || savedSchedule.count !== 1 || typeof savedSchedule.seed !== "string") throw new Error("Verification source contains an unsupported saved schedule");
+    if (!validateFaultSchedule(savedSchedule, { scenarioId: source.scenarioId, seed: savedSchedule.seed })) throw new Error("Verification source contains an unsupported saved schedule");
     for (let index = 1; index <= 3; index += 1) {
       const run = await executeRun({ mode: "faulted", seed: savedSchedule.seed, schedule: savedSchedule });
       printRun(run.result, run.artifactDir);

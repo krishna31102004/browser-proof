@@ -8,6 +8,7 @@ import { startSupportDesk, type SupportDeskServer } from "@browserproof/demo-sup
 import {
   ARTIFACT_SCHEMA_VERSION,
   evaluateRefundAtMostOnce,
+  FAULT_SCHEDULE_REGISTRY,
   type FaultSchedule,
   type RefundEffect,
   type RunManifest,
@@ -213,7 +214,8 @@ export async function executeRun(options: RunOptions): Promise<RunSummary> {
           upstreamCommittedBeforeLoss = true;
           faultTriggered = true;
           browserReceivedSuccess = false;
-          await events.record("runner", "fault.triggered", { type: "commit_then_response_lost", upstreamCommitted: true, browserReceivedSuccess: false }, { actionId, requestId });
+          const phase = FAULT_SCHEDULE_REGISTRY.find((binding) => binding.scenarioId === SCENARIO_ID)?.expectedPhase;
+          await events.record("runner", "fault.triggered", { type: "commit_then_response_lost", phase, upstreamCommitted: true, browserReceivedSuccess: false }, { actionId, requestId });
           await upstream.dispose();
           await route.abort("failed");
           return;

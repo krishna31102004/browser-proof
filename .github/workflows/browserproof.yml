@@ -106,29 +106,37 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
           if (!expectedNegative || !expectedPositive || !requiredZero) process.exit(1);
           NODE
+      - name: Run focused contracts and schedule registry tests
+        run: pnpm --filter @browserproof/contracts exec vitest run test/contract.test.ts
       - name: Run three-type real Chromium network-fault campaign
         shell: bash
         run: |
           mkdir -p ci-evidence
+          find artifacts -maxdepth 1 -type f -name 'network-faults-verification-*.json' -printf '%f\n' 2>/dev/null | sort > ci-evidence/network-reports-before.txt || true
           pnpm bp verify --scenario network-faults | tee ci-evidence/network-faults.log
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          const path = fs.readdirSync('artifacts').filter((name) => /^network-faults-verification-.+\.json$/.test(name)).sort().at(-1);
-          if (!path) throw new Error('Network fault campaign report was not produced');
+          const before = new Set(fs.readFileSync('ci-evidence/network-reports-before.txt', 'utf8').split(/\r?\n/).filter(Boolean));
+          const created = fs.readdirSync('artifacts').filter((name) => /^network-faults-verification-.+\.json$/.test(name) && !before.has(name));
+          if (created.length !== 1) throw new Error(`Expected one new network fault campaign report, found ${created.length}`);
+          const path = created[0];
           const report = JSON.parse(fs.readFileSync(`artifacts/${path}`, 'utf8'));
           const rows = report.results.map((item) => `| ${item.fault} | ${item.cleanRunIds.length}/3 | ${item.faultedRunIds.length}/3 | ${item.reproductionRunIds.length}/3 | ${item.passes}/9 |`).join('\n');
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n## Prompt 07 network faults\n\n| Fault | Clean | Faulted | Fresh replay | Valid artifacts |\n|---|---:|---:|---:|---:|\n${rows}\n\nReport: \`artifacts/${path}\`\n`);
-          if (report.allPassed !== true || report.results.length !== 3 || report.results.some((item) => item.passes !== 9)) process.exit(1);
+          if (report.baseCommit !== process.env.GITHUB_SHA || report.allPassed !== true || report.results.length !== 3 || report.results.some((item) => item.passes !== 9)) process.exit(1);
           NODE
       - name: Run three-type real Chromium browser-state campaign
         shell: bash
         run: |
           mkdir -p ci-evidence
+          find artifacts -maxdepth 1 -type f -name 'browser-faults-verification-*.json' -printf '%f\n' 2>/dev/null | sort > ci-evidence/browser-reports-before.txt || true
           pnpm bp verify --scenario browser-faults | tee ci-evidence/browser-faults.log
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          const name = fs.readdirSync('artifacts').filter((entry) => /^browser-faults-verification-.+\.json$/.test(entry)).sort().at(-1);
-          if (!name) throw new Error('Browser-state campaign report was not produced');
+          const before = new Set(fs.readFileSync('ci-evidence/browser-reports-before.txt', 'utf8').split(/\r?\n/).filter(Boolean));
+          const created = fs.readdirSync('artifacts').filter((entry) => /^browser-faults-verification-.+\.json$/.test(entry) && !before.has(entry));
+          if (created.length !== 1) throw new Error(`Expected one new browser-state campaign report, found ${created.length}`);
+          const name = created[0];
           const report = JSON.parse(fs.readFileSync(`artifacts/${name}`, 'utf8'));
           const required = ['delayed_render', 'session_expire', 'navigation_abort'];
           const byFault = new Map(report.faults.map((row) => [row.fault, row]));
@@ -165,11 +173,14 @@ jobs:
         shell: bash
         run: |
           mkdir -p ci-evidence
+          find artifacts -maxdepth 1 -type f -name 'context-faults-verification-*.json' -printf '%f\n' 2>/dev/null | sort > ci-evidence/context-reports-before.txt || true
           pnpm bp verify --scenario context-faults | tee ci-evidence/context-faults.log
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          const name = fs.readdirSync('artifacts').filter((entry) => /^context-faults-verification-.+\.json$/.test(entry)).sort().at(-1);
-          if (!name) throw new Error('Context fault campaign report was not produced');
+          const before = new Set(fs.readFileSync('ci-evidence/context-reports-before.txt', 'utf8').split(/\r?\n/).filter(Boolean));
+          const created = fs.readdirSync('artifacts').filter((entry) => /^context-faults-verification-.+\.json$/.test(entry) && !before.has(entry));
+          if (created.length !== 1) throw new Error(`Expected one new context campaign report, found ${created.length}`);
+          const name = created[0];
           const report = JSON.parse(fs.readFileSync(`artifacts/${name}`, 'utf8'));
           const required = ['popup_context_shift', 'storage_clear'];
           const cells = ['vulnerableClean', 'vulnerableFaulted', 'hardenedClean', 'hardenedFaulted', 'vulnerableFreshReproduction', 'hardenedFreshReproduction'];
@@ -207,11 +218,14 @@ jobs:
         shell: bash
         run: |
           mkdir -p ci-evidence
+          find artifacts -maxdepth 1 -type f -name 'shopbench-verification-*.json' -printf '%f\n' 2>/dev/null | sort > ci-evidence/shopbench-reports-before.txt || true
           pnpm bp verify --scenario shopbench | tee ci-evidence/shopbench.log
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          const name = fs.readdirSync('artifacts').filter((entry) => /^shopbench-verification-.+\.json$/.test(entry)).map((entry) => ({ entry, mtime: fs.statSync(`artifacts/${entry}`).mtimeMs })).sort((a, b) => b.mtime - a.mtime)[0]?.entry;
-          if (!name) throw new Error('ShopBench report was not produced');
+          const before = new Set(fs.readFileSync('ci-evidence/shopbench-reports-before.txt', 'utf8').split(/\r?\n/).filter(Boolean));
+          const created = fs.readdirSync('artifacts').filter((entry) => /^shopbench-verification-.+\.json$/.test(entry) && !before.has(entry));
+          if (created.length !== 1) throw new Error(`Expected one new ShopBench report, found ${created.length}`);
+          const name = created[0];
           const report = JSON.parse(fs.readFileSync(`artifacts/${name}`, 'utf8'));
           const workflows = ['shopbench-place-order-v1', 'shopbench-update-shipping-v1', 'shopbench-cancel-order-v1', 'shopbench-apply-coupon-v1'];
           const cells = ['vulnerableClean', 'vulnerableFaulted', 'hardenedClean', 'hardenedFaulted', 'vulnerableFreshReproduction', 'hardenedFreshReproduction'];

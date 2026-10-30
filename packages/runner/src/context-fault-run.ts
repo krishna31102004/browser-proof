@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright";
-import { ARTIFACT_SCHEMA_VERSION, evaluateAdminCorrectRecord, type AdminRecordEffect, type AdminRecordSnapshot, type ContextFaultScenarioId, type ContextFaultSchedule, type ContextFaultType, type ResultStatus, type RunMode } from "@browserproof/contracts";
+import { ARTIFACT_SCHEMA_VERSION, evaluateAdminCorrectRecord, evaluateAdminWorkflowContract, FAULT_SCHEDULE_REGISTRY, validateFaultSchedule, type AdminRecordEffect, type AdminRecordSnapshot, type ContextFaultScenarioId, type ContextFaultSchedule, type ContextFaultType, type ResultStatus, type RunMode } from "@browserproof/contracts";
 import { startAdminBench } from "@browserproof/demo-admin";
 import { EventWriter } from "./event-writer.js";
 import { queryAdminEffects, queryAdminState } from "./admin-run.js";
@@ -23,7 +23,6 @@ export interface ContextFaultOptions { fault: ContextFaultType; mode: RunMode; a
 export interface ContextFaultRun { result: ContextFaultResult; artifactDir: string }
 
 const scenario = (fault: ContextFaultType): ContextFaultScenarioId => fault === "popup_context_shift" ? "adminbench-popup-context-shift-v1" : "adminbench-storage-clear-v1";
-const exactKeys = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).sort().join("|") === [...keys].sort().join("|");
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 export function createContextFaultSchedule(fault: ContextFaultType, seed: string): ContextFaultSchedule {
@@ -33,10 +32,8 @@ export function createContextFaultSchedule(fault: ContextFaultType, seed: string
 }
 
 export function validateContextFaultSchedule(value: unknown, expected?: ContextFaultType, seed?: string): value is ContextFaultSchedule {
-  if (!record(value) || value.schemaVersion !== ARTIFACT_SCHEMA_VERSION || typeof value.seed !== "string" || !value.seed || value.scheduleId !== `${String(value.type)}-${value.seed}` || value.occurrenceCount !== 1 || (expected && value.type !== expected) || (seed && value.seed !== seed)) return false;
-  if (value.type === "popup_context_shift") return value.scenarioId === "adminbench-popup-context-shift-v1" && record(value.target) && exactKeys(value.target, ["app", "path", "recordId"]) && value.target.app === "adminbench" && value.target.path === "/adminbench/editor" && value.target.recordId === "beacon" && value.trigger === "after_agent_link_observed_before_link_click" && exactKeys(value, ["schemaVersion", "scheduleId", "scenarioId", "type", "seed", "target", "trigger", "occurrenceCount"]);
-  if (value.type === "storage_clear") return value.scenarioId === "adminbench-storage-clear-v1" && record(value.target) && exactKeys(value.target, ["app", "storage", "keyPrefix", "recordId"]) && value.target.app === "adminbench" && value.target.storage === "localStorage" && value.target.keyPrefix === "browserproof:selected-record:" && value.target.recordId === "beacon" && value.trigger === "after_agent_selection_observed_before_confirm" && exactKeys(value, ["schemaVersion", "scheduleId", "scenarioId", "type", "seed", "target", "trigger", "occurrenceCount"]);
-  return false;
+  if (!validateFaultSchedule(value, { ...(seed ? { seed } : {}) })) return false;
+  return ["popup_context_shift", "storage_clear"].includes((value as ContextFaultSchedule).type) && (!expected || (value as ContextFaultSchedule).type === expected);
 }
 
 const filesFor = (fault: ContextFaultType) => ["manifest.json", "scenario.json", "schedule.json", "events.jsonl", "effects.json", "result.json", "trace.zip", "screenshots/before-agent.png", "screenshots/at-fault-boundary.png", "screenshots/after-agent.png", ...(fault === "popup_context_shift" ? ["screenshots/parent-at-popup.png", "screenshots/popup-before-action.png", "popup-evidence.json"] : ["storage-evidence.json"])] ;
@@ -252,6 +249,9 @@ export async function validateContextFaultArtifacts(artifactDir: string): Promis
     }
     const recomputedContract = r.observerStatus === "complete" ? evaluateAdminCorrectRecord(r.observedEffects, r.finalRecords) : null;
     if (JSON.stringify(recomputedContract) !== JSON.stringify(r.contract)) errors.push("contract result does not match independent effects and final state");
+    const expectedPhase = FAULT_SCHEDULE_REGISTRY.find((binding) => binding.scenarioId === r.scenarioId)?.expectedPhase ?? null;
+    const sharedEvaluation = evaluateAdminWorkflowContract({ effects: r.observedEffects, finalRecords: r.finalRecords, taskCompleted: r.taskCompleted, observerStatus: r.observerStatus, runId: r.runId, executionStatus: r.status, fault: { required: mode === "faulted", armed: r.fault.armed, triggered: r.fault.triggered, triggerCount: r.fault.triggerCount, expectedCount: mode === "faulted" ? 1 : 0, phase: r.fault.phase, expectedPhase: mode === "faulted" ? expectedPhase : null } });
+    if (sharedEvaluation.status !== r.status || sharedEvaluation.normalizedFailureSignature !== r.contract?.signature) errors.push("shared workflow assessment disagrees with independent result/contract");
     if (r.fault.armed && !r.fault.triggered && r.status !== "injection_error") errors.push("untriggered armed fault is not classified as injection_error");
     if (fault === "popup_context_shift") {
       if (!includes("agent.link_observed") || !includes("agent.click_attempt")) errors.push("popup observation/click event missing");

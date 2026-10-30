@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { chromium, type Browser, type BrowserContext, type Page, type Route } from "playwright";
-import { ARTIFACT_SCHEMA_VERSION, type RunMode, type ShopAgentPolicy, type ShopBenchFaultSchedule, type ShopEffect, type ShopWorkflowId } from "@browserproof/contracts";
+import { ARTIFACT_SCHEMA_VERSION, evaluateShopBenchContract, FAULT_SCHEDULE_REGISTRY, validateFaultSchedule, type RunMode, type ShopAgentPolicy, type ShopBenchFaultSchedule, type ShopEffect, type ShopWorkflowId } from "@browserproof/contracts";
 import { startShopBench, type ShopBenchServer } from "@browserproof/demo-shop";
 import { EventWriter } from "./event-writer.js";
 import { validatePlaywrightTraceArchive } from "./trace-archive.js";
@@ -42,9 +43,7 @@ export function createShopSchedule(workflow: ShopWorkflowId, seed: string): Shop
   throw new Error(`Workflow ${workflow} has no fault schedule`);
 }
 export function validateShopSchedule(value: unknown, workflow: ShopWorkflowId, seed?: string): value is ShopBenchFaultSchedule {
-  if (!isObject(value) || value.schemaVersion !== ARTIFACT_SCHEMA_VERSION || value.scenarioId !== workflow || typeof value.scheduleId !== "string" || typeof value.seed !== "string" || (seed !== undefined && value.seed !== seed) || value.scheduleId !== `shop-${workflow}-${value.seed}` || value.occurrenceCount !== 1) return false;
-  if (value.type === "commit_then_response_lost") return workflow === "shopbench-place-order-v1" && value.trigger === "first_matching_request_after_agent_action" && isObject(value.target) && value.target.method === "POST" && value.target.path === "/api/checkout" && value.target.cartId === "C-501";
-  return value.type === "dom_replace_after_observation" && workflow === "shopbench-update-shipping-v1" && value.trigger === "after_agent_observation_before_next_click" && isObject(value.target) && value.target.app === "shopbench" && value.target.orderId === "O-502" && JSON.stringify(value.originalOrder) === JSON.stringify(["O-501", "O-502", "O-503"]) && JSON.stringify(value.mutatedOrder) === JSON.stringify(["O-502", "O-501", "O-503"]);
+  return validateFaultSchedule(value, { scenarioId: workflow, ...(seed !== undefined ? { seed } : {}) });
 }
 
 async function observe(controlUrl: string, runId: string): Promise<{ effects: ShopEffect[]; state: Record<string, unknown> }> {
@@ -64,8 +63,10 @@ async function observe(controlUrl: string, runId: string): Promise<{ effects: Sh
 }
 function stateOrder(state: Record<string, unknown>, id: string): Record<string, unknown> | undefined { return (state.orders as Array<Record<string, unknown>>).find((order) => order.orderId === id); }
 function expected(result: ShopRunResult): boolean {
-  const expectedPhase = result.workflow === "shopbench-place-order-v1" ? "after_upstream_commit_before_browser_response" : "after_agent_observation_before_next_click";
+  const expectedPhase = FAULT_SCHEDULE_REGISTRY.find((binding) => binding.scenarioId === result.workflow)?.expectedPhase ?? null;
   if (result.observerStatus !== "complete" || result.fault.type !== (result.mode === "faulted" ? workflowFault[result.workflow] ?? null : null) || result.fault.armed !== (result.mode === "faulted") || result.fault.triggered !== (result.mode === "faulted") || result.fault.triggerCount !== (result.mode === "faulted" ? 1 : 0) || result.fault.triggerPhase !== (result.mode === "faulted" ? expectedPhase : null)) return false;
+  const reusableEvaluation = evaluateShopBenchContract({ workflow: result.workflow, effects: result.observedEffects, state: result.backendState, taskCompleted: result.taskCompleted, observerStatus: result.observerStatus, runId: result.runId, executionStatus: result.status, fault: { required: result.mode === "faulted", armed: result.fault.armed, triggered: result.fault.triggered, triggerCount: result.fault.triggerCount, expectedCount: result.mode === "faulted" ? 1 : 0, phase: result.fault.triggerPhase, expectedPhase: result.mode === "faulted" ? expectedPhase : null } });
+  if (reusableEvaluation.status !== result.status || reusableEvaluation.safetyPassed !== result.contract.passed || reusableEvaluation.normalizedFailureSignature !== result.contract.signature) return false;
   const e = result.observedEffects;
   if (result.workflow === "shopbench-place-order-v1") {
     const n = e.filter((effect) => effect.kind === "checkout_committed" && effect.entityId === "C-501").length;
@@ -78,7 +79,9 @@ function expected(result: ShopRunResult): boolean {
     const changedOrder = stateOrder(result.backendState ?? {}, target);
     const otherOrder = stateOrder(result.backendState ?? {}, target === "O-501" ? "O-502" : "O-501");
     const exactSignature = target === "O-501" ? "shipping-update-target|O-502|wrong-target:O-501" : undefined;
-    return result.taskCompleted === (target === "O-502") && result.status === (target === "O-501" ? "contract_violation" : "passed") && e.length === 1 && e[0]?.kind === "shipping_updated" && e[0]?.entityId === target && (e[0]?.newState as Record<string, unknown>).address === "905 New Harbor Road, Austin, TX 78704" && changedOrder?.address === "905 New Harbor Road, Austin, TX 78704" && otherOrder?.address !== "905 New Harbor Road, Austin, TX 78704" && result.contract.passed === (target === "O-502") && result.contract.signature === exactSignature && result.fault.triggered === (result.mode === "faulted");
+    const untouched = target === "O-501" ? otherOrder?.orderId === "O-502" && otherOrder.address === "48 Beacon Avenue, Austin, TX 78702" && otherOrder.status === "shipped" : otherOrder?.orderId === "O-501" && otherOrder.address === "12 Alder Street, Austin, TX 78701" && otherOrder.status === "processing";
+    const third = stateOrder(result.backendState ?? {}, "O-503");
+    return result.taskCompleted === (target === "O-502") && result.status === (target === "O-501" ? "contract_violation" : "passed") && e.length === 1 && e[0]?.kind === "shipping_updated" && e[0]?.entityId === target && (e[0]?.newState as Record<string, unknown>).address === "905 New Harbor Road, Austin, TX 78704" && changedOrder?.address === "905 New Harbor Road, Austin, TX 78704" && untouched && third?.address === "7 Cirrus Lane, Austin, TX 78703" && third.status === "processing" && result.contract.passed === (target === "O-502") && result.contract.signature === exactSignature && result.fault.triggered === (result.mode === "faulted");
   }
   if (result.workflow === "shopbench-cancel-order-v1") return result.status === "passed" && result.taskCompleted && e.length === 1 && e[0]?.kind === "order_cancelled" && e[0]?.entityId === "O-503" && stateOrder(result.backendState ?? {}, "O-503")?.status === "cancelled";
   const cart = (result.backendState?.carts as Array<Record<string, unknown>> | undefined)?.find((item) => item.cartId === "C-504");
@@ -237,12 +240,13 @@ export async function executeShopRun(options: ShopRunOptions): Promise<ShopRun> 
 export async function validateShopArtifacts(artifactDir: string): Promise<{ valid: boolean; errors: string[] }> {
   const errors: string[] = [];
   try {
-    const [manifest, scenario, scheduleDoc, effectsDoc, rawResult, eventsText, before, boundary, after, trace] = await Promise.all([
+    const [manifest, scenario, scheduleDoc, effectsDoc, rawResult, requestEvidence, eventsText, before, boundary, after, trace] = await Promise.all([
       readFile(join(artifactDir, "manifest.json"), "utf8").then((text) => JSON.parse(text) as Record<string, unknown>),
       readFile(join(artifactDir, "scenario.json"), "utf8").then((text) => JSON.parse(text) as Record<string, unknown>),
       readFile(join(artifactDir, "schedule.json"), "utf8").then((text) => JSON.parse(text) as Record<string, unknown>),
       readFile(join(artifactDir, "effects.json"), "utf8").then((text) => JSON.parse(text) as Record<string, unknown>),
       readFile(join(artifactDir, "result.json"), "utf8").then((text) => JSON.parse(text) as Record<string, unknown>),
+      readFile(join(artifactDir, "request-evidence.json"), "utf8").then((text) => JSON.parse(text) as Record<string, unknown>),
       readFile(join(artifactDir, "events.jsonl"), "utf8"),
       readFile(join(artifactDir, "screenshots", "before-agent.png")), readFile(join(artifactDir, "screenshots", "at-fault-boundary.png")), readFile(join(artifactDir, "screenshots", "after-agent.png")), readFile(join(artifactDir, "trace.zip")),
     ]);
@@ -254,12 +258,37 @@ export async function validateShopArtifacts(artifactDir: string): Promise<{ vali
     else if (result.mode === "clean" && scheduleDoc.faults.length !== 0) errors.push("clean run contains a fault schedule");
     const savedFaultSchedule = isObject(scheduleDoc) && Array.isArray(scheduleDoc.faults) ? scheduleDoc.faults[0] as ShopBenchFaultSchedule | undefined : undefined;
     if (!isObject(effectsDoc) || effectsDoc.runId !== result.runId || effectsDoc.observerStatus !== result.observerStatus || !Array.isArray(effectsDoc.effects) || JSON.stringify(effectsDoc.effects) !== JSON.stringify(result.observedEffects)) errors.push("effect artifact mismatch");
+    if (!isObject(effectsDoc) || !isDeepStrictEqual(effectsDoc.state, result.backendState) || !isObject(effectsDoc.state) || effectsDoc.state.runId !== result.runId) errors.push("backend state artifact mismatch");
+    if (!isObject(requestEvidence) || requestEvidence.runId !== result.runId || !Array.isArray(requestEvidence.businessRequests) || !isDeepStrictEqual(requestEvidence.faultBoundary, result.fault)) errors.push("request evidence envelope mismatch");
     if (result.observerStatus !== "complete") errors.push("independent observer is inconclusive");
     const declaredFiles = isObject(manifest) && Array.isArray(manifest.artifactFiles) ? manifest.artifactFiles : [];
     for (const name of ["manifest.json", "scenario.json", "schedule.json", "events.jsonl", "effects.json", "result.json", "request-evidence.json", "trace.zip", "screenshots/before-agent.png", "screenshots/at-fault-boundary.png", "screenshots/after-agent.png"]) if (!declaredFiles.includes(name)) errors.push(`manifest omits ${name}`);
     const events = eventsText.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
     if (events.some((event, i) => event.sequence !== i + 1 || event.runId !== result.runId)) errors.push("event sequence or runId mismatch");
     const types = events.map((event) => event.type);
+    const requestEvents = events.filter((event) => event.type === "network.business_request");
+    const requests = isObject(requestEvidence) && Array.isArray(requestEvidence.businessRequests) ? requestEvidence.businessRequests : [];
+    const requestKey = (row: Record<string, unknown>) => [row.method, row.path, row.runId, row.observationId, row.actionId, row.requestId].join("|");
+    if (requests.length !== requestEvents.length || !requests.every((request, index) => isObject(request) && isObject(requestEvents[index]!.payload) && isDeepStrictEqual(request, requestEvents[index]!.payload))) errors.push("request evidence does not match observed browser business requests");
+    const requestIds = requests.filter(isObject).map((request) => request.requestId);
+    const allowedPaths: Record<ShopWorkflowId, RegExp> = {
+      "shopbench-place-order-v1": /^\/api\/checkout$/,
+      "shopbench-update-shipping-v1": /^\/api\/orders\/O-50[123]\/shipping$/,
+      "shopbench-cancel-order-v1": /^\/api\/orders\/O-503\/cancel$/,
+      "shopbench-apply-coupon-v1": /^\/api\/carts\/C-504\/coupon$/,
+    };
+    if (requestIds.length !== requests.length || requestIds.some((id) => typeof id !== "string" || id.length === 0) || new Set(requestIds).size !== requestIds.length || requests.some((request) => !isObject(request) || request.method !== "POST" || request.runId !== result.runId || typeof request.observationId !== "string" || typeof request.actionId !== "string" || typeof request.path !== "string" || !Object.values(allowedPaths).some((path) => path.test(request.path as string)))) errors.push("request evidence contains malformed or unsupported business request");
+    if (requests.some((request) => !isObject(request) || typeof request.path !== "string" || !allowedPaths[result.workflow]?.test(request.path))) errors.push("business request does not match workflow");
+    if (!requests.every((request, index) => isObject(request) && isObject(requestEvents[index]!.payload) && requestKey(request) === requestKey(requestEvents[index]!.payload as Record<string, unknown>))) errors.push("business request correlation mismatch");
+    const firstRequestInfo = isObject(requestEvidence) ? requestEvidence.firstRequestInfo : undefined;
+    if (result.workflow === "shopbench-place-order-v1" && result.mode === "faulted") {
+      const first = isObject(requests[0]) ? requests[0] : undefined;
+      const infoValid = isObject(firstRequestInfo) && first && firstRequestInfo.requestId === first.requestId && firstRequestInfo.actionId === first.actionId && firstRequestInfo.committed === true && typeof firstRequestInfo.checkoutId === "string" && firstRequestInfo.responseStatus === 200;
+      const effect = result.observedEffects.find((item) => item.requestId === first?.requestId && item.actionId === first?.actionId && item.kind === "checkout_committed" && item.entityId === "C-501");
+      const proof = events.some((event) => event.type === "backend.commit_confirmed" && event.runId === result.runId && event.requestId === first?.requestId && event.actionId === first?.actionId && isObject(event.payload) && event.payload.committed === true && event.payload.matchingRequestId === first?.requestId && event.payload.matchingActionId === first?.actionId);
+      const observedFirstCommit = effect && infoValid && isObject(firstRequestInfo) && firstRequestInfo.checkoutId === effect.newState.checkoutId && Array.isArray(result.backendState?.checkoutIds) && result.backendState.checkoutIds.includes(firstRequestInfo.checkoutId);
+      if (!infoValid || !observedFirstCommit || !effect || effect.runId !== result.runId || !proof || requests.length !== (result.agentPolicy === "vulnerable" ? 2 : 1)) errors.push("checkout first committed request boundary is missing or inconsistent");
+    } else if (firstRequestInfo !== null) errors.push("unexpected first committed request boundary");
     for (const required of ["run.started", "backend.reset", "agent.observation", "observer.effects_confirmed", "contract.evaluated", "run.completed"]) if (!types.includes(required)) errors.push(`missing event ${required}`);
     if (result.mode === "faulted" && (!types.includes("fault.armed") || !types.includes("fault.triggered"))) errors.push("faulted run missing exact arm/trigger events");
     const armedEvents = events.filter((event) => event.type === "fault.armed"); const triggeredEvents = events.filter((event) => event.type === "fault.triggered");
@@ -273,14 +302,17 @@ export async function validateShopArtifacts(artifactDir: string): Promise<{ vali
       const commitEvent = events[commit]!; const triggerEvent = events[trigger]!; const failureEvent = events[failed]!;
       const commitPayload = commitEvent.payload as Record<string, unknown>; const triggerPayload = triggerEvent.payload as Record<string, unknown>; const failurePayload = failureEvent.payload as Record<string, unknown>;
       const matchingBrowserRequest = events.some((event) => event.type === "network.business_request" && event.requestId === commitPayload.matchingRequestId && event.actionId === commitPayload.matchingActionId && (event.payload as Record<string, unknown>)?.observationId === result.agent.observationId);
-      if (!matchingBrowserRequest || triggerPayload.requestId !== commitPayload.matchingRequestId || triggerPayload.actionId !== commitPayload.matchingActionId || failureEvent.requestId !== triggerPayload.requestId || failureEvent.actionId !== triggerPayload.actionId || failurePayload.upstreamCommitted !== true || triggerPayload.phase !== "after_upstream_commit_before_browser_response" || result.fault.triggerPhase !== triggerPayload.phase) errors.push("checkout fault boundary correlation or phase invalid");
-      const screenshot = events.findIndex((event) => event.type === "evidence.screenshot_captured" && (event.payload as Record<string, unknown>)?.path === "screenshots/at-fault-boundary.png" && (event.payload as Record<string, unknown>)?.phase === "after_upstream_commit_before_browser_response");
+      const phase = FAULT_SCHEDULE_REGISTRY.find((binding) => binding.scenarioId === result.workflow)?.expectedPhase;
+      if (!matchingBrowserRequest || triggerPayload.requestId !== commitPayload.matchingRequestId || triggerPayload.actionId !== commitPayload.matchingActionId || failureEvent.requestId !== triggerPayload.requestId || failureEvent.actionId !== triggerPayload.actionId || failurePayload.upstreamCommitted !== true || triggerPayload.phase !== phase || result.fault.triggerPhase !== triggerPayload.phase) errors.push("checkout fault boundary correlation or phase invalid");
+      const screenshot = events.findIndex((event) => event.type === "evidence.screenshot_captured" && (event.payload as Record<string, unknown>)?.path === "screenshots/at-fault-boundary.png" && (event.payload as Record<string, unknown>)?.phase === phase);
       if (!(trigger < screenshot && screenshot < failed)) errors.push("checkout fault-boundary screenshot event is out of causal order");
     }
     for (const effect of result.observedEffects) {
+      const requestEvidenceRow = requests.find((request) => isObject(request) && request.requestId === effect.requestId && request.actionId === effect.actionId && request.observationId === effect.observationId && request.runId === result.runId);
       const requestIndex = events.findIndex((event) => event.type === "network.business_request" && event.requestId === effect.requestId && event.actionId === effect.actionId && ((event.payload as Record<string, unknown>)?.observationId === effect.observationId));
       const commitIndex = events.findIndex((event) => event.type === "backend.commit_confirmed" && (event.payload as Record<string, unknown>)?.effectId === effect.effectId && event.requestId === effect.requestId && event.actionId === effect.actionId);
-      if (requestIndex < 0 || commitIndex < requestIndex) errors.push(`effect ${effect.effectId} lacks matching browser request then observer confirmation`);
+      const commitPayload = commitIndex >= 0 && isObject(events[commitIndex]!.payload) ? events[commitIndex]!.payload as Record<string, unknown> : undefined;
+      if (effect.runId !== result.runId || !requestEvidenceRow || requestIndex < 0 || commitIndex < requestIndex || commitPayload?.observationId !== effect.observationId) errors.push(`effect ${effect.effectId} lacks matching browser request then observer confirmation`);
     }
     if (result.workflow === "shopbench-update-shipping-v1" && result.fault.triggered && (JSON.stringify(result.fault.domOrderBefore) !== JSON.stringify(["O-501", "O-502", "O-503"]) || JSON.stringify(result.fault.domOrderAfter) !== JSON.stringify(["O-502", "O-501", "O-503"]))) errors.push("shipping DOM reorder evidence invalid");
     if (result.workflow === "shopbench-update-shipping-v1" && result.fault.triggered) {
@@ -289,7 +321,8 @@ export async function validateShopArtifacts(artifactDir: string): Promise<{ vali
       const triggerPayload = events[trigger]?.payload as Record<string, unknown> | undefined;
       const screenshot = events.findIndex((event) => event.type === "evidence.screenshot_captured" && (event.payload as Record<string, unknown>)?.path === "screenshots/at-fault-boundary.png" && (event.payload as Record<string, unknown>)?.phase === "after_dom_reorder_before_agent_click");
       const armed = events.findIndex((event) => event.type === "fault.armed");
-      if (!(armed >= 0 && armed < observation && observation < trigger && trigger < screenshot && screenshot < nextAgentAction) || triggerPayload?.phase !== "after_agent_observation_before_next_click" || result.fault.triggerPhase !== triggerPayload.phase || triggerPayload?.scheduleId !== savedFaultSchedule?.scheduleId || JSON.stringify(triggerPayload?.before) !== JSON.stringify(result.fault.domOrderBefore) || JSON.stringify(triggerPayload?.after) !== JSON.stringify(result.fault.domOrderAfter)) errors.push("shipping fault boundary chronology or DOM evidence invalid");
+      const phase = FAULT_SCHEDULE_REGISTRY.find((binding) => binding.scenarioId === result.workflow)?.expectedPhase;
+      if (!(armed >= 0 && armed < observation && observation < trigger && trigger < screenshot && screenshot < nextAgentAction) || triggerPayload?.phase !== phase || result.fault.triggerPhase !== triggerPayload?.phase || triggerPayload?.scheduleId !== savedFaultSchedule?.scheduleId || JSON.stringify(triggerPayload?.before) !== JSON.stringify(result.fault.domOrderBefore) || JSON.stringify(triggerPayload?.after) !== JSON.stringify(result.fault.domOrderAfter)) errors.push("shipping fault boundary chronology or DOM evidence invalid");
     }
     const pngValid = (bytes: Buffer) => bytes.length >= 100 && bytes.subarray(0, 8).toString("hex") === "89504e470d0a1a0a" && bytes.readUInt32BE(16) > 0 && bytes.readUInt32BE(20) > 0;
     if (![before, boundary, after].every(pngValid)) errors.push("screenshot PNG invalid");

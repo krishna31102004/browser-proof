@@ -72,6 +72,27 @@ describe("AdminBench browser agent execution", () => {
     expect(await validateAdminArtifacts(run.artifactDir, run.result)).toBe(false);
   }, 30000);
 
+  it("rejects a missing or altered AdminBench trigger phase", async () => {
+    const run = await executeAdminRun({ mode: "faulted", agent: "hardened", seed: `phase-integrity-${Date.now()}` });
+    const eventsPath = `${run.artifactDir}/events.jsonl`;
+    const savedEvents = await readFile(eventsPath, "utf8");
+    const events = savedEvents.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    const trigger = events.find((event) => event.type === "fault.triggered")!;
+    const payload = trigger.payload as Record<string, unknown>;
+    delete payload.phase;
+    await writeFile(eventsPath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+    expect(await validateAdminArtifacts(run.artifactDir, run.result)).toBe(false);
+    payload.phase = "before_upstream";
+    await writeFile(eventsPath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+    expect(await validateAdminArtifacts(run.artifactDir, run.result)).toBe(false);
+    await writeFile(eventsPath, savedEvents);
+    payload.phase = "after_agent_observation_before_next_click";
+    payload.type = "request_abort";
+    await writeFile(eventsPath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+    expect(await validateAdminArtifacts(run.artifactDir, run.result)).toBe(false);
+    await writeFile(eventsPath, savedEvents);
+  }, 30000);
+
   it("reports a missing DOM fault target as injection_error without a fake trigger or backend effect", async () => {
     const run = await executeAdminRun({ mode: "faulted", agent: "vulnerable", seed: `missing-target-${Date.now()}`, schedule: invalidSchedule("missing-target") });
     expect(run.result.status).toBe("injection_error");
