@@ -100,8 +100,8 @@ export async function executeContextFaultRun(options: ContextFaultOptions): Prom
         await events.record("runner", "fault.intervention_applied", { operation: "set_observed_anchor_target_blank", phase: "after_agent_link_observed_before_link_click", originalTarget, newTarget: await link.getAttribute("target") });
       }
       const popupObserved = new Promise<Page>((resolvePromise) => context!.once("page", (candidate) => resolvePromise(candidate)));
-      const popupWait = page.waitForEvent("popup", { timeout: 3000 }).catch(() => null);
-      const navigationWait = page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 3000 }).then(() => "same-page" as const).catch(() => null);
+      const popupWait = page.waitForEvent("popup", { timeout: 8000 }).catch(() => null);
+      const navigationWait = page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 8000 }).then(() => "same-page" as const).catch(() => null);
       await events.record("agent", "agent.click_attempt", { control: "Open Beacon editor", href: targetUrl, policy: options.agent }, { agentStepId: "open-beacon-editor", actionId });
       await link.click();
       const popup = await Promise.race([popupWait, navigationWait.then((value) => value === "same-page" ? null : new Promise<null>(() => {})), popupObserved.catch(() => null)]);

@@ -2,7 +2,7 @@
 
 BrowserProof tests browser agents against controlled browser and network faults. The agent acts through a real Playwright page; a separate local control plane independently reports committed effects. Contracts are evaluated against that backend truth, not clicks, browser response codes, screenshots, or agent claims.
 
-The local demonstrations use synthetic SupportDesk and AdminBench data. They make no real payment operations and contact no third-party application service. The checked-in evidence viewer is static and read-only; it does not run hosted agents.
+The local demonstrations use synthetic SupportDesk, AdminBench, and ShopBench data. They make no real payment operations and contact no third-party application service. The checked-in evidence viewer is static and read-only; it does not run hosted agents.
 
 ## Public evidence viewer
 
@@ -94,6 +94,25 @@ pnpm bp repro artifacts/<FAULTED_RUN_ID> --times 3
 
 `popup_context_shift` changes the observed same-origin Beacon editor link so the real click opens a child Page. The vulnerable reference policy remains in the open parent and commits Alice; the hardened policy verifies the actual popup and commits Beacon. `storage_clear` calls `localStorage.clear()` in the browser after Beacon was selected through the visible UI. The vulnerable policy then sees the missing-selection error and produces no effect; the hardened policy observes the lost selection, reselects Beacon through the UI, and commits once. Both faults preserve cookies/session state and are independently checked against the AdminBench effect ledger. The Prompt 09 local gate requires 36 artifact-validated Chromium runs (18 per fault across six 3/3 clean, faulted and fresh-reproduction cells). The current source adds that full matrix to CI; count the catalog as 10/10 only after the source-matched hosted Actions gate passes.
 
+### ShopBench third controlled app (Prompt 10)
+
+ShopBench is a third local-only synthetic storefront. Its business UI and independent observer use separate localhost listeners and a fresh run namespace. UI writes carry run, observation, action, and request IDs; the runner only controls browser actions and reads the separate ledger.
+
+```bash
+pnpm bp run --scenario shopbench --workflow shopbench-place-order-v1 --fault commit_then_response_lost --mode faulted --agent vulnerable --seed checkout-demo
+pnpm bp run --scenario shopbench --workflow shopbench-place-order-v1 --fault commit_then_response_lost --mode faulted --agent hardened --seed checkout-safe
+pnpm bp run --scenario shopbench --workflow shopbench-update-shipping-v1 --fault dom_replace_after_observation --mode faulted --agent vulnerable --seed shipping-demo
+pnpm bp run --scenario shopbench --workflow shopbench-update-shipping-v1 --fault dom_replace_after_observation --mode faulted --agent hardened --seed shipping-safe
+pnpm bp run --scenario shopbench --workflow shopbench-cancel-order-v1 --mode clean --seed cancel-demo
+pnpm bp run --scenario shopbench --workflow shopbench-apply-coupon-v1 --mode clean --seed coupon-demo
+pnpm bp verify --scenario shopbench
+pnpm bp repro artifacts/<FAULTED_RUN_ID> --times 3
+```
+
+The two fault-adapted workflows reuse existing fault types: checkout `commit_then_response_lost` independently confirms the first `C-501` commit before failing browser delivery, exposing a second commit under the vulnerable UI retry and a one-effect recovery after the hardened visible fresh-status GET. Shipping `dom_replace_after_observation` reorders actual order rows after observation; vulnerable stale-index selection updates `O-501`, while hardened stable-ID resolution updates only `O-502`. The six-cell 18-trial comparison for each workflow includes clean and faulted vulnerable/hardened runs plus fresh saved-schedule replays. Cancellation of `O-503` and application of `SAVE10` to `C-504` are clean-only baselines; coupon arithmetic is verified in integer cents. `verify --scenario shopbench` requires all 42 runs, unique IDs, independent effect/state evidence, valid screenshots/traces, exact schedules, and matching replay signatures. Its report is written to ignored `artifacts/shopbench-verification-<id>.json`.
+
+Prompt 10 passed the complete **42/42** local Chromium campaign: six 3/3 clean, faulted and fresh-replay cells for each of the two fault-adapted workflows, plus 3/3 clean cancellation and 3/3 clean coupon trials. The vulnerable checkout produces two independently observed `checkout_committed` effects for `C-501`; hardened checkout confirms visible fresh status and produces one. Vulnerable shipping commits one `shipping_updated` effect to the wrong `O-501`; hardened shipping commits one to intended `O-502`. The coupon baseline verifies $100.00 subtotal, $10.00 discount and $90.00 total using integer cents. The CI workflow repeats and validates this full campaign against its source commit. These are four ShopBench workflow foundations across three controlled applications, not additional fault types. The planned 36-case benchmark remains **0/36 NOT EXECUTED**, seeded-failure detection remains **UNMEASURED**, Stagehand remains **NOT IMPLEMENTED**, and the public Evidence Journal is unchanged.
+
 ## Static evidence workbench
 
 Five checked-in cases are exported from fresh, genuine local Playwright runs: SupportDesk clean and response-loss, AdminBench vulnerable clean, and vulnerable/hardened runs under the same DOM reorder schedule. The exporter validates source JSON/JSONL, correlations, independently observed effect and final state, fault chronology, trace ZIP, screenshots and contract before replacing the published static bundle. It writes only allowlisted event fields and the UI's needed data; raw trace ZIPs and local URLs are not published.
@@ -118,7 +137,7 @@ The viewer has no runtime backend, credentials, or environment-variable dependen
 
 ## Continuous integration
 
-`.github/workflows/browserproof.yml` runs for pushes to `main`, pull requests to `main`, and manual dispatch. It installs with the frozen lockfile, installs Chromium, typechecks and tests all workspaces, checks both regression outcomes and the full M0/AdminBench gates, executes the real 27-trial network-fault, 54-trial browser-state and 36-trial popup/storage campaigns, builds the static viewer and smoke-tests the production output. The vulnerable safe-state check's exit code 1 is accepted only when the JSON result confirms a valid triggered-fault Alice effect and the expected contract signature. The browser-state and context-fault jobs assert every six-cell matrix, complete independent observers, paired schedules, fresh replay signatures, unique runs, artifact evidence and expected effects. Failure runs upload local artifacts and command logs for seven days. Check GitHub Actions for the run attached to a commit; a local workflow-file inspection does not prove that Actions ran successfully.
+`.github/workflows/browserproof.yml` runs for pushes to `main`, pull requests to `main`, and manual dispatch. It installs with the frozen lockfile, installs Chromium, typechecks and tests all workspaces, checks both regression outcomes and the full M0/AdminBench gates, executes the real 27-trial network-fault, 54-trial browser-state, 36-trial popup/storage, and 42-trial ShopBench campaigns, builds the static viewer and smoke-tests the production output. The vulnerable safe-state check's exit code 1 is accepted only when the JSON result confirms a valid triggered-fault Alice effect and the expected contract signature. The fault campaigns assert complete independent observers, paired schedules, fresh replay signatures, unique runs/effects, artifact evidence and expected backend outcomes. Failure runs upload local artifacts and command logs for seven days. Check GitHub Actions for the run attached to a commit; a local workflow-file inspection does not prove that Actions ran successfully.
 
 Day 4 source verification passed in [GitHub Actions run 40833167948](https://github.com/krishna31102004/browser-proof/actions/runs/40833167948) on commit `0c94ba99caf1b04c39702d3fa065bb2cd8862209`.
 

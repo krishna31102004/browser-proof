@@ -6,6 +6,7 @@
   "dependencies": {
     "@browserproof/contracts": "workspace:*",
     "@browserproof/demo-admin": "workspace:*",
+    "@browserproof/demo-shop": "workspace:*",
     "@browserproof/demo-support": "workspace:*",
     "playwright": "^1.56.1"
   },

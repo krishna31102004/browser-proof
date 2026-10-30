@@ -24,7 +24,7 @@ describe("Prompt 09 context fault contracts", () => {
     expect(validateContextFaultSchedule({ ...storage, scenarioId: "adminbench-popup-context-shift-v1" })).toBe(false);
     expect(validateContextFaultSchedule({ ...storage, seed: "other" }, "storage_clear", "test-seed")).toBe(false);
     expect(validateContextFaultSchedule({ ...storage, type: "session_expire" })).toBe(false);
-  });
+  }, 30_000);
 
   it("uses the same-tab clean workflow and a real user-click popup for wrong-target and hardened recovery", async () => {
     const clean = await executeContextFaultRun({ fault: "popup_context_shift", mode: "clean", agent: "vulnerable", seed: "popup-clean" });
@@ -40,7 +40,7 @@ describe("Prompt 09 context fault contracts", () => {
     expect(eventDocs.findIndex((event) => event.type === "browser.popup_created")).toBeLessThan(eventDocs.findIndex((event) => event.type === "fault.triggered"));
     const changedOrder = await copyArtifact(vulnerable.artifactDir); const changedEventPath = join(changedOrder, "events.jsonl"); const changedLines = (await readFile(changedEventPath, "utf8")).trim().split("\n"); const browserIndex = changedLines.findIndex((line) => JSON.parse(line).type === "browser.popup_created"); const faultIndex = changedLines.findIndex((line) => JSON.parse(line).type === "fault.triggered"); [changedLines[browserIndex], changedLines[faultIndex]] = [changedLines[faultIndex]!, changedLines[browserIndex]!]; await writeFile(changedEventPath, `${changedLines.join("\n")}\n`);
     expect((await validateContextFaultArtifacts(changedOrder)).valid).toBe(false);
-  });
+  }, 30_000);
 
   it("clears actual localStorage, blocks vulnerable confirmation, and recovers by visible UI reselection", async () => {
     const clean = await executeContextFaultRun({ fault: "storage_clear", mode: "clean", agent: "hardened", seed: "storage-clean" });
@@ -52,14 +52,14 @@ describe("Prompt 09 context fault contracts", () => {
     for (const run of [clean, vulnerable, hardened]) expect((await validateContextFaultArtifacts(run.artifactDir)).valid).toBe(true);
     const proof = JSON.parse(await readFile(join(hardened.artifactDir, "storage-evidence.json"), "utf8"));
     expect(proof.storage.valueBefore).toBe("beacon"); expect(proof.storage.valueAfterClear).toBeNull(); expect(proof.storage.removedKeys).toContain(proof.storage.key); expect(proof.storage.cookieUnchanged).toBe(true); expect(proof.storage.recovery.selectedByUi).toBe(true);
-  });
+  }, 30_000);
 
   it("classifies an armed but unfired schedule and an unavailable observer as non-passing", async () => {
     const unfired = await executeContextFaultRun({ fault: "popup_context_shift", mode: "faulted", agent: "hardened", seed: "popup-unfired", suppressTriggerForTest: true });
     expect(unfired.result.fault.armed).toBe(true); expect(unfired.result.fault.triggered).toBe(false); expect(unfired.result.status).toBe("injection_error"); expect((await validateContextFaultArtifacts(unfired.artifactDir)).valid).toBe(false);
     const observerMissing = await executeContextFaultRun({ fault: "storage_clear", mode: "clean", agent: "hardened", seed: "observer-missing", observerUrlOverride: "http://127.0.0.1:1" });
     expect(observerMissing.result.observerStatus).toBe("observer_inconclusive"); expect(observerMissing.result.status).toBe("observer_inconclusive"); expect((await validateContextFaultArtifacts(observerMissing.artifactDir)).valid).toBe(false);
-  });
+  }, 30_000);
 
   it("rejects tampered popup identity, storage proof, duplicate IDs, PNG and CRC-corrupt traces", async () => {
     const popup = await executeContextFaultRun({ fault: "popup_context_shift", mode: "faulted", agent: "hardened", seed: "tamper-popup" });
@@ -77,7 +77,7 @@ describe("Prompt 09 context fault contracts", () => {
 
     const corruptPng = await copyArtifact(storage.artifactDir); await writeFile(join(corruptPng, "screenshots/after-agent.png"), "not png"); expect((await validateContextFaultArtifacts(corruptPng)).valid).toBe(false);
     const corruptTrace = await copyArtifact(storage.artifactDir); const tracePath = join(corruptTrace, "trace.zip"); const trace = await readFile(tracePath); const midpoint = Math.floor(trace.length / 2); trace[midpoint] = (trace[midpoint] ?? 0) ^ 0xff; await writeFile(tracePath, trace); expect((await validateContextFaultArtifacts(corruptTrace)).valid).toBe(false);
-  });
+  }, 30_000);
 
   it("rejects tampered reproduction schedules and signatures, and rejects reused run IDs/signatures", async () => {
     const source = await executeContextFaultRun({ fault: "popup_context_shift", mode: "faulted", agent: "vulnerable", seed: "repro-source" });

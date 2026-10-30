@@ -203,6 +203,62 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n## Prompt 09 popup and storage faults\n\n| Fault | Vulnerable clean | Vulnerable faulted | Hardened clean | Hardened faulted | Fresh replays V/H | Valid artifacts |\n|---|---:|---:|---:|---:|---:|---:|\n${rows}\n\nReport: \`artifacts/${name}\`\n`);
           if (!valid) process.exit(1);
           NODE
+      - name: Run ShopBench 42-run real Chromium campaign
+        shell: bash
+        run: |
+          mkdir -p ci-evidence
+          pnpm bp verify --scenario shopbench | tee ci-evidence/shopbench.log
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const name = fs.readdirSync('artifacts').filter((entry) => /^shopbench-verification-.+\.json$/.test(entry)).map((entry) => ({ entry, mtime: fs.statSync(`artifacts/${entry}`).mtimeMs })).sort((a, b) => b.mtime - a.mtime)[0]?.entry;
+          if (!name) throw new Error('ShopBench report was not produced');
+          const report = JSON.parse(fs.readFileSync(`artifacts/${name}`, 'utf8'));
+          const workflows = ['shopbench-place-order-v1', 'shopbench-update-shipping-v1', 'shopbench-cancel-order-v1', 'shopbench-apply-coupon-v1'];
+          const cells = ['vulnerableClean', 'vulnerableFaulted', 'hardenedClean', 'hardenedFaulted', 'vulnerableFreshReproduction', 'hardenedFreshReproduction'];
+          const byWorkflow = new Map(report.workflows.map((row) => [row.workflow, row]));
+          const expectedCell = (row, cell) => {
+            const trials = row.trials.filter((trial) => trial.cell === cell);
+            if (trials.length !== 3 || !trials.every((trial) => trial.accepted && trial.artifactValid && trial.observerStatus === 'complete')) return false;
+            const vulnerable = cell.startsWith('vulnerable');
+            const clean = cell.endsWith('Clean');
+            if (row.workflow === 'shopbench-place-order-v1') {
+              const duplicate = !clean && vulnerable;
+              return trials.every((trial) => trial.status === (duplicate ? 'contract_violation' : 'passed') && trial.taskCompleted === true
+                && trial.effects.length === (duplicate ? 2 : 1) && trial.effects.every((effect) => effect.kind === 'checkout_committed' && effect.entityId === 'C-501')
+                && trial.contract.passed === !duplicate && trial.contract.signature === (duplicate ? 'checkout-at-most-once|C-501|count>1' : undefined)
+                && trial.effects.every((effect) => effect.effectId && effect.actionId && effect.requestId && effect.observationId)
+                && (clean ? trial.faultArmed === false && trial.faultTriggered === false && trial.triggerPhase === null : trial.faultArmed === true && trial.faultTriggered === true && trial.triggerCount === 1 && trial.triggerPhase === 'after_upstream_commit_before_browser_response'));
+            }
+            if (row.workflow === 'shopbench-update-shipping-v1') {
+              const wrong = !clean && vulnerable;
+              return trials.every((trial) => trial.status === (wrong ? 'contract_violation' : 'passed') && trial.taskCompleted === !wrong
+                && trial.effects.length === 1 && trial.effects[0].kind === 'shipping_updated' && trial.effects[0].entityId === (wrong ? 'O-501' : 'O-502')
+                && trial.contract.passed === !wrong && trial.contract.signature === (wrong ? 'shipping-update-target|O-502|wrong-target:O-501' : undefined)
+                && trial.effects[0].effectId && trial.effects[0].actionId && trial.effects[0].requestId && trial.effects[0].observationId
+                && (clean ? trial.faultArmed === false && trial.faultTriggered === false && trial.triggerPhase === null : trial.faultArmed === true && trial.faultTriggered === true && trial.triggerCount === 1 && trial.triggerPhase === 'after_agent_observation_before_next_click'));
+            }
+            const expectedKind = row.workflow === 'shopbench-cancel-order-v1' ? 'order_cancelled' : 'coupon_applied';
+            const expectedTarget = row.workflow === 'shopbench-cancel-order-v1' ? 'O-503' : 'C-504';
+            return trials.every((trial) => trial.cell === 'clean_only' && trial.status === 'passed' && trial.taskCompleted === true && trial.faultArmed === false && trial.faultTriggered === false
+              && trial.effects.length === 1 && trial.effects[0].kind === expectedKind && trial.effects[0].entityId === expectedTarget
+              && trial.triggerPhase === null && trial.effects[0].effectId && trial.effects[0].actionId && trial.effects[0].requestId && trial.effects[0].observationId);
+          };
+          const trials = report.workflows.flatMap((row) => row.trials);
+          const runIds = trials.map((trial) => trial.runId);
+          const effectIds = trials.flatMap((trial) => trial.effects.map((effect) => effect.effectId));
+          const valid = report.baseCommit === process.env.GITHUB_SHA && report.allPassed === true && report.requiredTrials === 42 && report.validatedTrials === 42 && report.workflowCount === 4
+            && report.uniqueRunIds === true && report.uniqueEffectIds === true && workflows.length === 4 && report.workflows.length === 4
+            && new Set(runIds).size === 42 && new Set(effectIds).size === effectIds.length
+            && workflows.every((workflow) => {
+              const row = byWorkflow.get(workflow);
+              if (!row) return false;
+              if (workflow === 'shopbench-place-order-v1' || workflow === 'shopbench-update-shipping-v1') return row.validatedTrials === '18/18' && row.uniqueRunIds === true && row.uniqueEffects === true && row.scheduleExact === true && row.reproductionSignaturesMatch === true && row.trials.every((trial) => trial.mode === 'clean' ? trial.scheduleId === null : trial.scheduleId === row.scheduleId) && cells.every((cell) => row.counts[cell] === '3/3' && expectedCell(row, cell));
+              return row.cleanOnly === true && row.validatedTrials === '3/3' && expectedCell(row, 'clean_only');
+            });
+          const matrix = workflows.map((workflow) => { const row = byWorkflow.get(workflow); return `| ${workflow} | ${row?.validatedTrials ?? 'missing'} | ${workflow === 'shopbench-place-order-v1' || workflow === 'shopbench-update-shipping-v1' ? cells.map((cell) => `${cell} ${row?.counts[cell] ?? 'missing'}`).join('; ') : 'clean-only' } |`; }).join('\n');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n## Prompt 10 ShopBench evidence\n\n| Workflow | Validated | Trial cells |\n|---|---:|---|\n${matrix}\n\nReport: \`artifacts/${name}\`\n`);
+          if (!valid) process.exit(1);
+          NODE
       - name: Upload run and failure evidence
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,7 +1,7 @@
 # BrowserProof: Four-Day Recruiter-Ready Implementation Plan
 
 **Planning date:** 2026-10-28
-**Status:** M0, Day 2 AdminBench, Day 3 CI/evidence viewer, Day 4 public viewer deployment, Prompt 06 recruiter-first redesign, Prompt 07 three-fault regression, and Prompt 08 three browser-state faults are verified. Prompt 08 source commit `1bcea7b9c04420109534fc2e61ad44e36db789f0` passed GitHub Actions run `40947931771`; total verified fault types: 8/10.
+**Status:** Prompt 09 verified the complete 10/10 fault catalog in local Chromium and source-matched GitHub Actions run `40991357715`. Prompt 10 adds the third local controlled application and four ShopBench workflows; its 42/42 local Chromium acceptance and independent review passed on 2026-10-30. Prompt 10 source commit and source-matched hosted Actions remain pending publication; do not count Prompt 10 complete until that gate passes. Frozen benchmark remains **0/36 NOT EXECUTED**, detection rate **UNMEASURED**, and Stagehand is **NOT IMPLEMENTED**.
 **Source of truth:** `BrowserProof_Complete_Project_Handoff.md` (locked product and technical thesis).
 **Execution record:** `CODEX_RUN_LOG.md` (observed results only).
 **Agent rules:** `AGENTS.md`.
@@ -121,7 +121,7 @@ For every prompt: (1) inspect current git state + latest `CODEX_RUN_LOG.md`; (2)
 
 ## 9. Post-conference continuation
 
-Return to the handoff's full M0-M10 roadmap, filling gaps systematically: remaining fault types, real Stagehand adapter if absent, ShopBench if absent, 36-case benchmark if absent, bounded search and stability-aware minimization, full differential regression/reporting, stronger CI ergonomics, full trace viewer, evaluation/ablation and open-source release. Record exact progress in `CODEX_RUN_LOG.md` rather than rewriting the plan to imply features were done.
+Return to the handoff's full M0-M10 roadmap after Prompt 10: Stagehand adapter, the frozen 36-case benchmark, bounded search and stability-aware minimization, full differential regression/reporting, stronger CI ergonomics, full trace viewer, evaluation/ablation and open-source release remain future work. ShopBench now supplies four local workflow foundations but does not execute or freeze the benchmark. Record exact progress in `CODEX_RUN_LOG.md` rather than implying these features are complete.
 
 ## 10. External references consulted (research, not proof of implementation)
 

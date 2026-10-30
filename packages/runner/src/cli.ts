@@ -10,6 +10,8 @@ import { exportDemoEvidence } from "./demo-export.js";
 import { executeNetworkFaultRun, validateNetworkFaultArtifacts, type NetworkFaultRunResult, type NetworkFaultType, type NetworkFaultSchedule } from "./network-fault-run.js";
 import { BROWSER_STATE_TYPES, browserStateSignature, createBrowserStateSchedule, executeBrowserStateRun, validateBrowserStateArtifacts, validateBrowserStateSchedule, type BrowserStateAgentPolicy, type BrowserStateFaultSchedule, type BrowserStateFaultType, type BrowserStateRunResult } from "./browser-fault-run.js";
 import { contextFaultReproductionIdsAreFresh, createContextFaultSchedule, executeContextFaultRun, normalizedContextFaultSignature, validateContextFaultArtifacts, validateContextFaultSchedule, type ContextAgentPolicy, type ContextFaultResult, type ContextFaultType, type ContextFaultSchedule } from "./context-fault-run.js";
+import { createShopSchedule, executeShopRun, shopSignature, validateShopArtifacts, validateShopSchedule, type ShopRunResult } from "./shop-run.js";
+import type { ShopAgentPolicy, ShopBenchFaultSchedule, ShopWorkflowId } from "@browserproof/contracts";
 
 function argument(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -61,6 +63,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 async function runOnce(): Promise<number> {
+  if (argument("--scenario") === "shopbench") return runShopBenchOnce();
   if (argument("--scenario") === "context-faults") return runContextFaultOnce();
   if (argument("--scenario") === "browser-state") return runBrowserStateOnce();
   if (argument("--scenario") === "adminbench") return runAdminOnce();
@@ -71,6 +74,82 @@ async function runOnce(): Promise<number> {
   const run = await executeRun({ mode, seed });
   printRun(run.result, run.artifactDir);
   return isExpectedRun(run.result) && await validateRunArtifacts(run.artifactDir, run.result) ? 0 : 1;
+}
+
+function shopWorkflowArg(): ShopWorkflowId | undefined {
+  const workflow = argument("--workflow");
+  return ["shopbench-place-order-v1", "shopbench-update-shipping-v1", "shopbench-cancel-order-v1", "shopbench-apply-coupon-v1"].includes(workflow ?? "") ? workflow as ShopWorkflowId : undefined;
+}
+function expectedShopCell(result: ShopRunResult, mode: "clean" | "faulted", agent: ShopAgentPolicy): boolean {
+  return result.mode === mode && result.agentPolicy === agent && result.status !== "observer_inconclusive";
+}
+async function runShopBenchOnce(): Promise<number> {
+  validateShopFlags(new Set(["--scenario", "--workflow", "--fault", "--agent", "--mode", "--seed"]), process.argv.slice(3));
+  const workflow = shopWorkflowArg(); const agent = argument("--agent", "hardened") as ShopAgentPolicy; const mode = argument("--mode", "clean") as RunMode; const seed = argument("--seed", `shopbench-${randomUUID()}`)!;
+  const requestedFault = argument("--fault"); const expectedFault = workflow ? ({ "shopbench-place-order-v1": "commit_then_response_lost", "shopbench-update-shipping-v1": "dom_replace_after_observation" } as Partial<Record<ShopWorkflowId, string>>)[workflow] : undefined;
+  if (requestedFault && requestedFault !== expectedFault) throw new Error(`Fault ${requestedFault} is not implemented for workflow ${workflow ?? "<missing>"}`);
+  if (!workflow || !["vulnerable", "hardened"].includes(agent) || !["clean", "faulted"].includes(mode) || !seed) throw new Error("Usage: pnpm bp run --scenario shopbench --workflow <workflow-id> [--fault <compatible-fault>] --agent <vulnerable|hardened> --mode <clean|faulted> --seed <seed>");
+  const run = await executeShopRun({ workflow, agent, mode, seed }); const validation = await validateShopArtifacts(run.artifactDir);
+  console.log(JSON.stringify({ runId: run.result.runId, workflow, agent, mode, status: run.result.status, taskCompleted: run.result.taskCompleted, effects: run.result.observedEffects.map(({ effectId, kind, entityId, requestId }) => ({ effectId, kind, entityId, requestId })), fault: run.result.fault, signature: shopSignature(run.result), artifactDir: run.artifactDir, artifactValid: validation.valid, errors: validation.errors }, null, 2));
+  return validation.valid && expectedShopCell(run.result, mode, agent) ? 0 : 1;
+}
+
+function validateShopFlags(allowed: ReadonlySet<string>, args: readonly string[]): void {
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i += 1) {
+    const flag = args[i]!;
+    if (!flag.startsWith("--") || !allowed.has(flag)) throw new Error(`Unknown ShopBench CLI argument: ${flag}`);
+    if (seen.has(flag)) throw new Error(`Duplicate ShopBench CLI argument: ${flag}`);
+    seen.add(flag);
+    if (!args[i + 1] || args[i + 1]!.startsWith("--")) throw new Error(`Missing value for ${flag}`);
+    i += 1;
+  }
+}
+
+async function verifyShopBench(): Promise<number> {
+  const workflows: ShopWorkflowId[] = ["shopbench-place-order-v1", "shopbench-update-shipping-v1", "shopbench-cancel-order-v1", "shopbench-apply-coupon-v1"];
+  const faultedWorkflows = workflows.slice(0, 2); const rows: Array<Record<string, unknown>> = []; const seenRunIds = new Set<string>(), seenEffectIds = new Set<string>(); let allPassed = true;
+  for (const workflow of faultedWorkflows) {
+    const seed = `shopbench-prompt10-${workflow}`; const schedule = createShopSchedule(workflow, seed);
+    const cells: Record<string, Array<Awaited<ReturnType<typeof executeShopRun>>>> = { vulnerable_clean: [], vulnerable_faulted: [], hardened_clean: [], hardened_faulted: [], vulnerable_reproduction: [], hardened_reproduction: [] };
+    for (const agent of ["vulnerable", "hardened"] as const) for (let i = 1; i <= 3; i++) cells[`${agent}_clean`]!.push(await executeShopRun({ workflow, mode: "clean", agent, seed: `${seed}-clean-${agent}-${i}` }));
+    for (const agent of ["vulnerable", "hardened"] as const) for (let i = 1; i <= 3; i++) cells[`${agent}_faulted`]!.push(await executeShopRun({ workflow, mode: "faulted", agent, seed, schedule }));
+    for (const agent of ["vulnerable", "hardened"] as const) {
+      const source = cells[`${agent}_faulted`]![0]!; const savedDoc = await readJson(resolve(source.artifactDir, "schedule.json")); const saved = Array.isArray(savedDoc.faults) ? savedDoc.faults[0] as ShopBenchFaultSchedule | undefined : undefined;
+      if (!saved || !validateShopSchedule(saved, workflow, seed) || JSON.stringify(saved) !== JSON.stringify(schedule)) throw new Error(`ShopBench saved schedule mismatch for ${workflow}/${agent}`);
+      for (let i = 1; i <= 3; i++) cells[`${agent}_reproduction`]!.push(await executeShopRun({ workflow, mode: "faulted", agent, seed, schedule: saved }));
+    }
+    const trials: Array<Record<string, unknown>> = []; let accepted = 0;
+    for (const [cell, runs] of Object.entries(cells)) for (const run of runs) {
+      const validation = await validateShopArtifacts(run.artifactDir); const unique = !seenRunIds.has(run.result.runId); seenRunIds.add(run.result.runId);
+      const effectsUnique = run.result.observedEffects.every((effect) => !seenEffectIds.has(effect.effectId)); run.result.observedEffects.forEach((effect) => seenEffectIds.add(effect.effectId));
+      const agent = cell.startsWith("vulnerable") ? "vulnerable" : "hardened"; const mode = cell.includes("clean") ? "clean" : "faulted";
+      let behavior = expectedShopCell(run.result, mode, agent as ShopAgentPolicy);
+      if (workflow === "shopbench-place-order-v1") behavior &&= run.result.observedEffects.filter((effect) => effect.kind === "checkout_committed").length === (mode === "faulted" && agent === "vulnerable" ? 2 : 1) && (mode === "clean" ? !run.result.fault.triggered : run.result.fault.triggered);
+      else behavior &&= run.result.observedEffects.length === 1 && run.result.observedEffects[0]?.entityId === (mode === "faulted" && agent === "vulnerable" ? "O-501" : "O-502") && (mode === "clean" ? !run.result.fault.triggered : run.result.fault.triggered);
+      const acceptedTrial = unique && effectsUnique && validation.valid && behavior;
+      if (acceptedTrial) accepted++;
+      trials.push({ cell, runId: run.result.runId, workflow, agent: run.result.agentPolicy, mode: run.result.mode, status: run.result.status, taskCompleted: run.result.taskCompleted, observerStatus: run.result.observerStatus, effects: run.result.observedEffects.map(({ effectId, kind, entityId, requestId, actionId, observationId }) => ({ effectId, kind, entityId, requestId, actionId, observationId })), faultArmed: run.result.fault.armed, faultTriggered: run.result.fault.triggered, triggerCount: run.result.fault.triggerCount, triggerPhase: run.result.fault.triggerPhase, scheduleId: run.result.mode === "faulted" ? schedule.scheduleId : null, signature: shopSignature(run.result), contract: run.result.contract, faultEvidence: { firstCommitBeforeBrowserFailure: run.result.fault.firstCommitBeforeBrowserFailure, browserRequestFailed: run.result.fault.browserRequestFailed, domOrderBefore: run.result.fault.domOrderBefore, domOrderAfter: run.result.fault.domOrderAfter }, artifactDir: run.artifactDir, artifactValid: validation.valid, validationErrors: validation.errors, accepted: acceptedTrial });
+    }
+    const scheduleExact = cells.vulnerable_faulted!.concat(cells.hardened_faulted!, cells.vulnerable_reproduction!, cells.hardened_reproduction!).every(({ result }) => result.fault.triggered && result.fault.triggerCount === 1);
+    const reproExact = (["vulnerable", "hardened"] as const).every((agent) => cells[`${agent}_reproduction`]!.every(({ result }) => shopSignature(result) === shopSignature(cells[`${agent}_faulted`]![0]!.result)));
+    const passed = accepted === 18 && scheduleExact && reproExact; allPassed &&= passed;
+    const cellKeys: Record<string, string> = { vulnerable_clean: "vulnerableClean", vulnerable_faulted: "vulnerableFaulted", hardened_clean: "hardenedClean", hardened_faulted: "hardenedFaulted", vulnerable_reproduction: "vulnerableFreshReproduction", hardened_reproduction: "hardenedFreshReproduction" };
+    const localEffectIds = trials.flatMap((trial) => (trial.effects as Array<Record<string, unknown>>).map((effect) => effect.effectId));
+    rows.push({ workflow, scenarioId: workflow, scheduleId: schedule.scheduleId, counts: Object.fromEntries(Object.entries(cellKeys).map(([cell, key]) => [key, `${trials.filter((trial) => trial.cell === cell && trial.accepted).length}/3`])), validatedTrials: `${accepted}/18`, scheduleExact, reproductionSignaturesMatch: reproExact, uniqueRunIds: Object.values(cells).flat().length === 18 && new Set(Object.values(cells).flat().map(({ result }) => result.runId)).size === 18, uniqueEffects: new Set(localEffectIds).size === localEffectIds.length, trials });
+  }
+  for (const workflow of workflows.slice(2)) {
+    const runs = [] as Awaited<ReturnType<typeof executeShopRun>>[];
+    for (let i = 1; i <= 3; i++) runs.push(await executeShopRun({ workflow, mode: "clean", agent: "hardened", seed: `shopbench-prompt10-${workflow}-${i}` }));
+    const trials: Array<Record<string, unknown>> = []; let valid = 0;
+    for (const run of runs) { const check = await validateShopArtifacts(run.artifactDir); const unique = !seenRunIds.has(run.result.runId); seenRunIds.add(run.result.runId); const effectsUnique = run.result.observedEffects.every((effect) => !seenEffectIds.has(effect.effectId)); run.result.observedEffects.forEach((effect) => seenEffectIds.add(effect.effectId)); const accepted = unique && effectsUnique && check.valid && run.result.status === "passed" && run.result.taskCompleted && run.result.mode === "clean" && run.result.observedEffects.length === 1 && !run.result.fault.triggered; if (accepted) valid++; trials.push({ cell: "clean_only", runId: run.result.runId, workflow, agent: run.result.agentPolicy, mode: run.result.mode, status: run.result.status, taskCompleted: run.result.taskCompleted, observerStatus: run.result.observerStatus, effects: run.result.observedEffects.map(({ effectId, kind, entityId, requestId, actionId, observationId }) => ({ effectId, kind, entityId, requestId, actionId, observationId })), faultArmed: run.result.fault.armed, faultTriggered: run.result.fault.triggered, triggerCount: run.result.fault.triggerCount, triggerPhase: run.result.fault.triggerPhase, signature: shopSignature(run.result), contract: run.result.contract, artifactDir: run.artifactDir, artifactValid: check.valid, validationErrors: check.errors, accepted }); }
+    allPassed &&= valid === 3; rows.push({ workflow, scenarioId: workflow, cleanOnly: true, validatedTrials: `${valid}/3`, trials });
+  }
+  const effectIds = rows.flatMap((row) => (row.trials as Array<Record<string, unknown>>).flatMap((trial) => (trial.effects as Array<Record<string, unknown>>).map((effect) => effect.effectId)));
+  const report = { schemaVersion: 1, campaign: "shopbench", baseCommit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(), createdAt: new Date().toISOString(), requiredTrials: 42, validatedTrials: rows.reduce((n, row) => n + Number(String(row.validatedTrials).split("/")[0]), 0), workflowCount: new Set(rows.map((row) => row.workflow)).size, uniqueRunIds: seenRunIds.size === 42, uniqueEffectIds: new Set(effectIds).size === effectIds.length, allPassed, workflows: rows };
+  const reportPath = resolve("artifacts", `shopbench-verification-${randomUUID()}.json`); await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  console.log(JSON.stringify({ campaign: report.campaign, allPassed, requiredTrials: 42, validatedTrials: report.validatedTrials, uniqueRunIds: report.uniqueRunIds, workflows: rows.map(({ workflow, validatedTrials, counts, scheduleId }) => ({ workflow, validatedTrials, counts, scheduleId, runIds: ("trials" in rows.find((row) => row.workflow === workflow)! ? (rows.find((row) => row.workflow === workflow)!.trials as Array<Record<string, unknown>>).map((trial) => trial.runId) : []) })), reportPath }, null, 2));
+  return allPassed && report.validatedTrials === 42 && report.workflowCount === 4 && report.uniqueRunIds ? 0 : 1;
 }
 
 function expectedContextFault(result: ContextFaultResult, expectedMode: RunMode, expectedAgent: ContextAgentPolicy): boolean {
@@ -278,6 +357,10 @@ async function reproduce(): Promise<number> {
   const times = Number(argument("--times", "3"));
   if (!sourceArg || !Number.isInteger(times) || times < 1) throw new Error("Usage: pnpm bp repro artifacts/<runId> --times <count>");
   const sourceDir = resolve(sourceArg);
+  try {
+    const shopResult = await readJson(resolve(sourceDir, "result.json"));
+    if (typeof shopResult.scenarioId === "string" && shopResult.scenarioId.startsWith("shopbench-")) return reproduceShopBench(sourceDir, shopResult, times);
+  } catch { /* existing scenario-specific validators provide the detailed error */ }
   const [scenario, schedule, originalResult] = await Promise.all([
     readJson(resolve(sourceDir, "scenario.json")), readJson(resolve(sourceDir, "schedule.json")), readJson(resolve(sourceDir, "result.json")),
   ]);
@@ -320,6 +403,22 @@ async function reproduce(): Promise<number> {
   }
   console.log(`Reproduction: ${successes}/${times}`);
   return successes === times ? 0 : 1;
+}
+
+async function reproduceShopBench(sourceDir: string, source: Record<string, unknown>, times: number): Promise<number> {
+  validateShopFlags(new Set(["--times"]), process.argv.slice(4));
+  if (times > 9) throw new Error("ShopBench reproduction count must be between 1 and 9");
+  const validation = await validateShopArtifacts(sourceDir); if (!validation.valid) throw new Error(`ShopBench reproduction source failed artifact validation: ${validation.errors.join("; ")}`);
+  if (source.mode !== "faulted" || (source.agentPolicy !== "vulnerable" && source.agentPolicy !== "hardened") || typeof source.scenarioId !== "string") throw new Error("ShopBench schedule reproduction requires a faulted source run and known agent policy");
+  const workflow = source.scenarioId as ShopWorkflowId; const sourceScheduleDoc = await readJson(resolve(sourceDir, "schedule.json")); const saved = Array.isArray(sourceScheduleDoc.faults) ? sourceScheduleDoc.faults[0] as ShopBenchFaultSchedule | undefined : undefined;
+  if (!saved || !validateShopSchedule(saved, workflow, typeof source.seed === "string" ? source.seed : undefined)) throw new Error("ShopBench saved schedule is invalid or mismatched");
+  const runs = [] as Awaited<ReturnType<typeof executeShopRun>>[];
+  for (let i = 0; i < times; i++) runs.push(await executeShopRun({ workflow, mode: "faulted", agent: source.agentPolicy, seed: saved.seed, schedule: saved }));
+  const signature = shopSignature(source as unknown as ShopRunResult); const unique = new Set(runs.map(({ result }) => result.runId)).size === times && runs.every(({ result }) => result.runId !== source.runId);
+  let passes = 0;
+  for (const run of runs) if (unique && shopSignature(run.result) === signature && (await validateShopArtifacts(run.artifactDir)).valid) passes++;
+  console.log(JSON.stringify({ reproduction: `${passes}/${times}`, sourceRunId: source.runId, workflow, agent: source.agentPolicy, scheduleId: saved.scheduleId, signature, runIds: runs.map(({ result }) => result.runId), artifacts: runs.map(({ artifactDir }) => artifactDir) }, null, 2));
+  return passes === times ? 0 : 1;
 }
 
 async function reproduceContextFault(sourceDir: string, scenarioDoc: Record<string, unknown>, scheduleDoc: Record<string, unknown>, rawOriginal: Record<string, unknown>, times: number): Promise<number> {
@@ -653,7 +752,7 @@ async function main(): Promise<void> {
   let code: number;
   if (command === "run") code = await runOnce();
   else if (command === "repro") code = await reproduce();
-  else if (command === "verify") code = scenario === "adminbench" ? await verifyAdminBench() : scenario === "network-faults" ? await verifyNetworkFaults() : scenario === "browser-faults" ? await verifyBrowserFaults() : scenario === "context-faults" ? await verifyContextFaults() : await verify();
+  else if (command === "verify") code = scenario === "shopbench" ? await verifyShopBench() : scenario === "adminbench" ? await verifyAdminBench() : scenario === "network-faults" ? await verifyNetworkFaults() : scenario === "browser-faults" ? await verifyBrowserFaults() : scenario === "context-faults" ? await verifyContextFaults() : await verify();
   else if (command === "regression") code = await runRegression();
   else if (command === "export-demo") code = await exportDemo();
   else throw new Error("Usage: pnpm bp <run|repro|verify>");

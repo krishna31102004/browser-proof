@@ -27,7 +27,7 @@ export interface AdminBenchScenario {
   agentPolicy: "vulnerable-index" | "hardened-stable-id";
 }
 
-export type ScenarioDefinition = Scenario | AdminBenchScenario;
+export type ScenarioDefinition = Scenario | AdminBenchScenario | ShopBenchScenario;
 
 export interface FaultSchedule {
   schemaVersion: typeof ARTIFACT_SCHEMA_VERSION;
@@ -73,7 +73,42 @@ export type ContextFaultSchedule =
   | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "adminbench-popup-context-shift-v1"; type: "popup_context_shift"; seed: string; target: { app: "adminbench"; path: "/adminbench/editor"; recordId: "beacon" }; trigger: "after_agent_link_observed_before_link_click"; occurrenceCount: 1 }
   | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "adminbench-storage-clear-v1"; type: "storage_clear"; seed: string; target: { app: "adminbench"; storage: "localStorage"; keyPrefix: "browserproof:selected-record:"; recordId: "beacon" }; trigger: "after_agent_selection_observed_before_confirm"; occurrenceCount: 1 };
 
-export type FaultScheduleDefinition = FaultSchedule | AdminBenchFaultSchedule | NetworkFaultSchedule | BrowserStateFaultSchedule | ContextFaultSchedule;
+export type FaultScheduleDefinition = FaultSchedule | AdminBenchFaultSchedule | NetworkFaultSchedule | BrowserStateFaultSchedule | ContextFaultSchedule | ShopBenchScheduleDefinition;
+
+export type ShopWorkflowId = "shopbench-place-order-v1" | "shopbench-update-shipping-v1" | "shopbench-cancel-order-v1" | "shopbench-apply-coupon-v1";
+export type ShopFaultType = "commit_then_response_lost" | "dom_replace_after_observation";
+export type ShopAgentPolicy = "vulnerable" | "hardened";
+export interface ShopBenchScenario {
+  schemaVersion: typeof ARTIFACT_SCHEMA_VERSION;
+  scenarioId: ShopWorkflowId;
+  application: "shopbench";
+  agentPolicy: ShopAgentPolicy;
+  task: string;
+}
+export type ShopBenchFaultSchedule =
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "shopbench-place-order-v1"; type: "commit_then_response_lost"; seed: string; target: { method: "POST"; path: "/api/checkout"; cartId: "C-501" }; trigger: "first_matching_request_after_agent_action"; occurrenceCount: 1 }
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "shopbench-update-shipping-v1"; type: "dom_replace_after_observation"; seed: string; target: { app: "shopbench"; list: "orders"; orderId: "O-502" }; trigger: "after_agent_observation_before_next_click"; occurrenceCount: 1; originalOrder: ["O-501", "O-502", "O-503"]; mutatedOrder: ["O-502", "O-501", "O-503"] };
+export type ShopBenchScheduleDefinition = ShopBenchFaultSchedule;
+export interface ShopEffect {
+  effectId: string;
+  runId: string;
+  observationId: string;
+  actionId: string;
+  requestId: string;
+  kind: "checkout_committed" | "shipping_updated" | "order_cancelled" | "coupon_applied";
+  entityType: "cart" | "order";
+  entityId: string;
+  previousState: Record<string, unknown>;
+  newState: Record<string, unknown>;
+  amountCents?: number;
+  discountCents?: number;
+  totalCents?: number;
+  committedAt: string;
+}
+
+export function shopScenarioId(workflow: ShopWorkflowId): ShopWorkflowId {
+  return workflow;
+}
 
 export interface RefundEffect {
   effectId: string;

@@ -54,6 +54,18 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  apps/demo-shop:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.2
+        version: 22.20.5
+      tsx:
+        specifier: ^4.20.0
+        version: 4.23.15
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
   apps/demo-support:
     devDependencies:
       '@types/node':
@@ -98,6 +110,9 @@ importers:
       '@browserproof/demo-admin':
         specifier: workspace:*
         version: link:../../apps/demo-admin
+      '@browserproof/demo-shop':
+        specifier: workspace:*
+        version: link:../../apps/demo-shop
       '@browserproof/demo-support':
         specifier: workspace:*
         version: link:../../apps/demo-support
