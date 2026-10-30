@@ -9,6 +9,7 @@ import { validateAdminArtifacts } from "./admin-artifact-validation.js";
 import { exportDemoEvidence } from "./demo-export.js";
 import { executeNetworkFaultRun, validateNetworkFaultArtifacts, type NetworkFaultRunResult, type NetworkFaultType, type NetworkFaultSchedule } from "./network-fault-run.js";
 import { BROWSER_STATE_TYPES, browserStateSignature, createBrowserStateSchedule, executeBrowserStateRun, validateBrowserStateArtifacts, validateBrowserStateSchedule, type BrowserStateAgentPolicy, type BrowserStateFaultSchedule, type BrowserStateFaultType, type BrowserStateRunResult } from "./browser-fault-run.js";
+import { contextFaultReproductionIdsAreFresh, createContextFaultSchedule, executeContextFaultRun, normalizedContextFaultSignature, validateContextFaultArtifacts, validateContextFaultSchedule, type ContextAgentPolicy, type ContextFaultResult, type ContextFaultType, type ContextFaultSchedule } from "./context-fault-run.js";
 
 function argument(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -60,6 +61,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 async function runOnce(): Promise<number> {
+  if (argument("--scenario") === "context-faults") return runContextFaultOnce();
   if (argument("--scenario") === "browser-state") return runBrowserStateOnce();
   if (argument("--scenario") === "adminbench") return runAdminOnce();
   if (argument("--scenario") === "supportdesk-network") return runNetworkFaultOnce();
@@ -69,6 +71,65 @@ async function runOnce(): Promise<number> {
   const run = await executeRun({ mode, seed });
   printRun(run.result, run.artifactDir);
   return isExpectedRun(run.result) && await validateRunArtifacts(run.artifactDir, run.result) ? 0 : 1;
+}
+
+function expectedContextFault(result: ContextFaultResult, expectedMode: RunMode, expectedAgent: ContextAgentPolicy): boolean {
+  if (result.mode !== expectedMode || result.agentPolicy !== expectedAgent || result.observerStatus !== "complete" || !result.contract) return false;
+  if (expectedMode === "clean") return result.status === "passed" && result.taskCompleted && !result.fault.armed && !result.fault.triggered && result.observedEffects.length === 1 && result.observedEffects[0]?.entityId === "beacon";
+  if (!result.fault.armed || !result.fault.triggered || result.fault.triggerCount !== 1) return false;
+  if (result.fault.type === "popup_context_shift" && expectedAgent === "vulnerable") return result.status === "contract_violation" && !result.taskCompleted && result.observedEffects.length === 1 && result.observedEffects[0]?.entityId === "alice" && result.contract.signature === "update-correct-record|beacon|wrong-target:alice";
+  if (result.fault.type === "storage_clear" && expectedAgent === "vulnerable") return result.status === "agent_error" && !result.taskCompleted && result.availability === "task_unavailable" && result.observedEffects.length === 0;
+  return result.status === "passed" && result.taskCompleted && result.observedEffects.length === 1 && result.observedEffects[0]?.entityId === "beacon" && result.contract?.passed === true;
+}
+
+async function runContextFaultOnce(): Promise<number> {
+  const fault = argument("--fault") as ContextFaultType | undefined; const agent = argument("--agent") as ContextAgentPolicy | undefined; const mode = argument("--mode") as RunMode | undefined; const seed = argument("--seed");
+  if (!fault || !["popup_context_shift", "storage_clear"].includes(fault) || (agent !== "vulnerable" && agent !== "hardened") || (mode !== "clean" && mode !== "faulted") || !seed) throw new Error("Usage: pnpm bp run --scenario context-faults --fault <popup_context_shift|storage_clear> --agent <vulnerable|hardened> --mode <clean|faulted> --seed <seed>");
+  const run = await executeContextFaultRun({ fault, agent, mode, seed }); const validation = await validateContextFaultArtifacts(run.artifactDir);
+  console.log(JSON.stringify({ runId: run.result.runId, fault, agent, mode, status: run.result.status, taskCompleted: run.result.taskCompleted, effects: run.result.observedEffects.length, effectIds: run.result.observedEffects.map(({ effectId }) => effectId), targets: run.result.observedEffects.map(({ entityId }) => entityId), faultArmed: run.result.fault.armed, faultTriggered: run.result.fault.triggered, signature: run.result.contract?.signature ?? null, artifactDir: run.artifactDir, artifactValid: validation.valid, errors: validation.errors }, null, 2));
+  return validation.valid && expectedContextFault(run.result, mode, agent) ? 0 : 1;
+}
+
+async function verifyContextFaults(): Promise<number> {
+  const rows: Array<Record<string, unknown>> = []; let allPassed = true; const types: ContextFaultType[] = ["popup_context_shift", "storage_clear"];
+  for (const fault of types) {
+    const seed = `context-${fault}-prompt09-v1`; const schedule = createContextFaultSchedule(fault, seed);
+    const clean: Record<ContextAgentPolicy, Awaited<ReturnType<typeof executeContextFaultRun>>[]> = { vulnerable: [], hardened: [] };
+    const faulted: Record<ContextAgentPolicy, Awaited<ReturnType<typeof executeContextFaultRun>>[]> = { vulnerable: [], hardened: [] };
+    const repro: Record<ContextAgentPolicy, Awaited<ReturnType<typeof executeContextFaultRun>>[]> = { vulnerable: [], hardened: [] };
+    for (const agent of ["vulnerable", "hardened"] as const) for (let n = 1; n <= 3; n += 1) clean[agent].push(await executeContextFaultRun({ fault, mode: "clean", agent, seed: `${seed}-clean-${agent}-${n}` }));
+    for (const agent of ["vulnerable", "hardened"] as const) for (let n = 1; n <= 3; n += 1) faulted[agent].push(await executeContextFaultRun({ fault, mode: "faulted", agent, seed, schedule }));
+    for (const agent of ["vulnerable", "hardened"] as const) {
+      const source = faulted[agent][0]!; const sourceDoc = await readJson(resolve(source.artifactDir, "schedule.json")); const saved = (sourceDoc.faults as unknown[])[0];
+      if (!validateContextFaultSchedule(saved, fault, seed) || JSON.stringify(saved) !== JSON.stringify(schedule)) throw new Error(`Saved schedule mismatch in ${source.artifactDir}`);
+      for (let n = 1; n <= 3; n += 1) repro[agent].push(await executeContextFaultRun({ fault, mode: "faulted", agent, seed, schedule: saved as ContextFaultSchedule, sourceRunId: source.result.runId }));
+    }
+    const cells = [
+      ...clean.vulnerable.map((run) => ({ cell: "vulnerable_clean", run, mode: "clean" as const, agent: "vulnerable" as const })),
+      ...faulted.vulnerable.map((run) => ({ cell: "vulnerable_faulted", run, mode: "faulted" as const, agent: "vulnerable" as const })),
+      ...clean.hardened.map((run) => ({ cell: "hardened_clean", run, mode: "clean" as const, agent: "hardened" as const })),
+      ...faulted.hardened.map((run) => ({ cell: "hardened_faulted", run, mode: "faulted" as const, agent: "hardened" as const })),
+      ...repro.vulnerable.map((run) => ({ cell: "vulnerable_reproduction", run, mode: "faulted" as const, agent: "vulnerable" as const })),
+      ...repro.hardened.map((run) => ({ cell: "hardened_reproduction", run, mode: "faulted" as const, agent: "hardened" as const })),
+    ];
+    const runIds = new Set<string>(); const effectIds = new Set<string>(); const actionIds = new Set<string>(); const requestIds = new Set<string>(); const observedScheduleIds = new Set<string>(); let validCount = 0; const trials: Array<Record<string, unknown>> = [];
+    for (const item of cells) {
+      const { result, artifactDir } = item.run; const validation = await validateContextFaultArtifacts(artifactDir); const savedDoc = await readJson(resolve(artifactDir, "schedule.json")); const savedFaults = Array.isArray(savedDoc.faults) ? savedDoc.faults : []; const savedTrialSchedule = savedFaults[0] as ContextFaultSchedule | undefined; const artifactScheduleId = savedTrialSchedule?.scheduleId ?? null; if (result.mode === "faulted" && artifactScheduleId) observedScheduleIds.add(artifactScheduleId); const unique = !runIds.has(result.runId); runIds.add(result.runId);
+      const effectUnique = result.observedEffects.every((effect) => !effectIds.has(effect.effectId) && !actionIds.has(effect.actionId) && !requestIds.has(effect.requestId));
+      for (const effect of result.observedEffects) { effectIds.add(effect.effectId); actionIds.add(effect.actionId); requestIds.add(effect.requestId); }
+      const accepted = unique && effectUnique && validation.valid && expectedContextFault(result, item.mode, item.agent); if (accepted) validCount += 1;
+      trials.push({ cell: item.cell, runId: result.runId, agent: result.agentPolicy, mode: result.mode, status: result.status, taskCompleted: result.taskCompleted, faultArmed: result.fault.armed, faultTriggered: result.fault.triggered, triggerCount: result.fault.triggerCount, scheduleId: artifactScheduleId, observerStatus: result.observerStatus, effectIds: result.observedEffects.map((effect) => effect.effectId), effectTargets: result.observedEffects.map((effect) => effect.entityId), signature: result.contract?.signature ?? null, artifactDir, artifactValid: validation.valid, validationErrors: validation.errors, accepted });
+    }
+    const uniqueIds = runIds.size === 18; const scheduleMatch = observedScheduleIds.size === 1 && observedScheduleIds.has(schedule.scheduleId) && [...faulted.vulnerable, ...faulted.hardened, ...repro.vulnerable, ...repro.hardened].every(({ result }) => result.fault.type === fault && result.fault.triggered && result.fault.triggerCount === 1);
+    const reproductionMatch = (["vulnerable", "hardened"] as const).every((agent) => contextFaultReproductionIdsAreFresh(faulted[agent][0]!.result.runId, repro[agent].map(({ result }) => result.runId)) && repro[agent].every(({ result }) => normalizedContextFaultSignature(result) === normalizedContextFaultSignature(faulted[agent][0]!.result)));
+    const passed = validCount === 18 && uniqueIds && scheduleMatch && reproductionMatch; allPassed &&= passed;
+    const byCell = (name: string) => trials.filter((trial) => trial.cell === name && trial.accepted).length;
+    rows.push({ fault, scenarioId: fault === "popup_context_shift" ? "adminbench-popup-context-shift-v1" : "adminbench-storage-clear-v1", scheduleId: schedule.scheduleId, counts: { vulnerableClean: `${byCell("vulnerable_clean")}/3`, vulnerableFaulted: `${byCell("vulnerable_faulted")}/3`, hardenedClean: `${byCell("hardened_clean")}/3`, hardenedFaulted: `${byCell("hardened_faulted")}/3`, vulnerableFreshReproduction: `${byCell("vulnerable_reproduction")}/3`, hardenedFreshReproduction: `${byCell("hardened_reproduction")}/3`, validatedTrials: `${validCount}/18` }, uniqueRunIds: uniqueIds, schedulesMatched: scheduleMatch, reproductionSignaturesMatch: reproductionMatch, trials });
+  }
+  const report = { schemaVersion: 1, campaign: "context-faults", baseCommit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(), createdAt: new Date().toISOString(), requiredTrials: 36, validatedTrials: rows.reduce((count, row) => count + Number(String((row.counts as Record<string, unknown>).validatedTrials).split("/")[0]), 0), allPassed, faults: rows };
+  const reportPath = resolve("artifacts", `context-faults-verification-${randomUUID()}.json`); await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  console.log(JSON.stringify({ campaign: report.campaign, allPassed, requiredTrials: report.requiredTrials, validatedTrials: report.validatedTrials, faults: rows.map((row) => ({ fault: row.fault, scheduleId: row.scheduleId, counts: row.counts, runIds: (row.trials as Array<Record<string, unknown>>).map((trial) => trial.runId) })), reportPath }, null, 2));
+  return allPassed && report.validatedTrials === 36 ? 0 : 1;
 }
 
 function expectedBrowserState(result: BrowserStateRunResult, expectedMode: "clean" | "faulted", agent: BrowserStateAgentPolicy): boolean {
@@ -222,6 +283,7 @@ async function reproduce(): Promise<number> {
   ]);
   if (schedule.mode !== "faulted" || !Array.isArray(schedule.faults)) throw new Error("Reproduction source must contain a saved faulted scenario/schedule");
   if (typeof scenario.scenarioId === "string" && scenario.scenarioId.startsWith("adminbench-delayed-render-") || scenario.scenarioId === "adminbench-delayed-render-v1" || scenario.scenarioId === "supportdesk-session-expire-v1" || scenario.scenarioId === "supportdesk-navigation-abort-v1") return reproduceBrowserState(sourceDir, scenario, schedule, originalResult, times);
+  if (scenario.scenarioId === "adminbench-popup-context-shift-v1" || scenario.scenarioId === "adminbench-storage-clear-v1") return reproduceContextFault(sourceDir, scenario, schedule, originalResult, times);
   if (scenario.name === "adminbench-deactivate-record") return reproduceAdmin(sourceDir, schedule, originalResult, times);
   if (scenario.name === "supportdesk-refund-network" || scenario.name === "supportdesk-stale-order-read") {
     const saved = schedule.faults[0] as NetworkFaultSchedule | undefined;
@@ -258,6 +320,23 @@ async function reproduce(): Promise<number> {
   }
   console.log(`Reproduction: ${successes}/${times}`);
   return successes === times ? 0 : 1;
+}
+
+async function reproduceContextFault(sourceDir: string, scenarioDoc: Record<string, unknown>, scheduleDoc: Record<string, unknown>, rawOriginal: Record<string, unknown>, times: number): Promise<number> {
+  const sourceValidation = await validateContextFaultArtifacts(sourceDir); if (!sourceValidation.valid) throw new Error(`Context-fault reproduction source failed validation: ${sourceValidation.errors.join("; ")}`);
+  const original = rawOriginal as unknown as ContextFaultResult; const fault = original.fault.type;
+  if (!fault || !["popup_context_shift", "storage_clear"].includes(fault) || scenarioDoc.scenarioId !== original.scenarioId) throw new Error("Context-fault reproduction scenario and result mismatch");
+  const saved = Array.isArray(scheduleDoc.faults) ? scheduleDoc.faults[0] : undefined;
+  if (!validateContextFaultSchedule(saved, fault, original.seed)) throw new Error("Saved context-fault schedule is invalid or mismatched");
+  const agent = (argument("--agent") ?? original.agentPolicy) as ContextAgentPolicy;
+  if (agent !== "vulnerable" && agent !== "hardened") throw new Error("--agent must be vulnerable or hardened");
+  const runs = [] as Awaited<ReturnType<typeof executeContextFaultRun>>[];
+  for (let index = 0; index < times; index += 1) runs.push(await executeContextFaultRun({ fault, mode: "faulted", agent, seed: original.seed, schedule: saved as ContextFaultSchedule, sourceRunId: original.runId }));
+  const freshIds = contextFaultReproductionIdsAreFresh(original.runId, runs.map(({ result }) => result.runId));
+  let passes = 0;
+  for (const run of runs) { const validation = await validateContextFaultArtifacts(run.artifactDir); if (freshIds && validation.valid && expectedContextFault(run.result, "faulted", agent) && normalizedContextFaultSignature(run.result) === normalizedContextFaultSignature({ ...original, agentPolicy: agent })) passes += 1; }
+  console.log(JSON.stringify({ reproduction: `${passes}/${times}`, sourceRunId: original.runId, fault, agent, scheduleId: saved.scheduleId, normalizedSignature: normalizedContextFaultSignature(original), runIds: runs.map(({ result }) => result.runId), effectIds: runs.map(({ result }) => result.observedEffects.map(({ effectId }) => effectId)), artifacts: runs.map(({ artifactDir }) => artifactDir) }, null, 2));
+  return passes === times ? 0 : 1;
 }
 
 async function reproduceBrowserState(sourceDir: string, scenario: Record<string, unknown>, scheduleDoc: Record<string, unknown>, rawOriginal: Record<string, unknown>, times: number): Promise<number> {
@@ -574,7 +653,7 @@ async function main(): Promise<void> {
   let code: number;
   if (command === "run") code = await runOnce();
   else if (command === "repro") code = await reproduce();
-  else if (command === "verify") code = scenario === "adminbench" ? await verifyAdminBench() : scenario === "network-faults" ? await verifyNetworkFaults() : scenario === "browser-faults" ? await verifyBrowserFaults() : await verify();
+  else if (command === "verify") code = scenario === "adminbench" ? await verifyAdminBench() : scenario === "network-faults" ? await verifyNetworkFaults() : scenario === "browser-faults" ? await verifyBrowserFaults() : scenario === "context-faults" ? await verifyContextFaults() : await verify();
   else if (command === "regression") code = await runRegression();
   else if (command === "export-demo") code = await exportDemo();
   else throw new Error("Usage: pnpm bp <run|repro|verify>");

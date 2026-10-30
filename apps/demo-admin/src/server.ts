@@ -64,19 +64,35 @@ const adminBenchHtml = `<!doctype html>
   <main>
     <h1>AdminBench</h1>
     <p class="hint">Task: deactivate Beacon exactly once. Do not update another record.</p>
+    <p id="popup-workflow" hidden><a data-testid="open-beacon-editor" href="/adminbench/editor?workflow=popup-context">Open Beacon editor</a></p>
+    <section id="storage-workflow" hidden aria-labelledby="storage-heading">
+      <h2 id="storage-heading">Select a record to deactivate</h2>
+      <p id="selection-state" data-testid="selection-state" role="status" aria-live="polite">No record selected.</p>
+      <div id="selection-options"></div>
+      <button id="confirm-deactivation" data-testid="confirm-deactivation" type="button">Confirm deactivation</button>
+    </section>
+    <section id="editor-workflow" hidden aria-labelledby="editor-heading">
+      <h2 id="editor-heading">Beacon editor</h2>
+      <p>Record ID: <strong data-testid="editor-record-id" data-record-id="beacon">beacon</strong></p>
+      <button id="beacon-editor-action" data-testid="beacon-editor-action" data-record-id="beacon" type="button">Deactivate Beacon</button>
+    </section>
     <table aria-label="Admin records">
       <thead><tr><th scope="col">Name</th><th scope="col">Record ID</th><th scope="col">Status</th><th scope="col">Action</th></tr></thead>
       <tbody id="records" data-testid="records" data-render-state="loading" aria-live="polite"></tbody>
     </table>
-    <p id="result" role="status" aria-live="polite"></p>
+    <p id="result" data-testid="result" role="status" aria-live="polite"></p>
   </main>
   <script>
     (() => {
       const params = new URLSearchParams(location.search);
       const runId = params.get('runId') || '';
       const delayedRender = params.get('workflow') === 'delayed-render';
+      const popupWorkflow = params.get('workflow') === 'popup-context';
+      const storageWorkflow = params.get('workflow') === 'storage-clear';
+      const editorWorkflow = location.pathname === '/adminbench/editor' && popupWorkflow && params.get('recordId') === 'beacon';
       const list = document.querySelector('#records');
       const result = document.querySelector('#result');
+      const storageKey = 'browserproof:selected-record:' + runId;
       let observationId = '';
       let nextActionContext = null;
       // The agent sets this after it records the real row order and before selecting a control.
@@ -99,6 +115,17 @@ const adminBenchHtml = `<!doctype html>
         if (!/^[A-Za-z0-9._:-]{1,128}$/.test(runId)) {
           result.textContent = 'A valid run identity is required.'; result.dataset.kind = 'error'; return;
         }
+        document.querySelector('#popup-workflow').hidden = !popupWorkflow || editorWorkflow;
+        document.querySelector('#storage-workflow').hidden = !storageWorkflow;
+        document.querySelector('#editor-workflow').hidden = !editorWorkflow;
+        document.querySelector('table').hidden = editorWorkflow || storageWorkflow;
+        if (popupWorkflow && !editorWorkflow) {
+          const editor = new URL('/adminbench/editor', location.origin);
+          editor.searchParams.set('workflow', 'popup-context');
+          editor.searchParams.set('runId', runId);
+          editor.searchParams.set('recordId', 'beacon');
+          document.querySelector('[data-testid="open-beacon-editor"]').href = editor.pathname + editor.search;
+        }
         if (delayedRender) {
           list.dataset.renderState = 'withheld';
           result.dataset.testid = 'render-pending';
@@ -119,6 +146,46 @@ const adminBenchHtml = `<!doctype html>
             }
           }
           list.replaceChildren();
+          if (editorWorkflow) {
+            const beacon = body.records.find((record) => record.recordId === 'beacon');
+            if (!beacon) throw new Error('Beacon editor record is unavailable.');
+            const editButton = document.querySelector('#beacon-editor-action');
+            editButton.disabled = beacon.status === 'inactive';
+            editButton.addEventListener('click', async () => {
+              await deactivateRecord('beacon');
+              editButton.disabled = true;
+            });
+            return;
+          }
+          if (storageWorkflow) {
+            const options = document.querySelector('#selection-options');
+            options.replaceChildren();
+            for (const record of body.records) {
+              const select = document.createElement('button');
+              select.type = 'button'; select.textContent = 'Select ' + record.name;
+              select.dataset.testid = 'select-record-' + record.recordId; select.dataset.recordId = record.recordId;
+              select.setAttribute('aria-pressed', 'false');
+              select.addEventListener('click', () => { localStorage.setItem(storageKey, record.recordId); refreshSelectionState(); });
+              options.append(select);
+            }
+            const confirm = document.querySelector('#confirm-deactivation');
+            confirm.disabled = false;
+            confirm.addEventListener('click', async () => {
+              // The persisted origin value is the source of truth; there is no in-memory selection.
+              const selectedRecordId = localStorage.getItem(storageKey);
+              if (selectedRecordId !== 'beacon') {
+                result.textContent = 'No valid record is selected. Select Beacon again.';
+                result.dataset.kind = 'error';
+                refreshSelectionState();
+                return;
+              }
+              await deactivateRecord(selectedRecordId);
+              confirm.disabled = true;
+            });
+            window.addEventListener('storage', refreshSelectionState);
+            refreshSelectionState();
+            return;
+          }
           for (const record of body.records) {
             const row = document.createElement('tr');
             row.dataset.recordId = record.recordId;
@@ -128,28 +195,13 @@ const adminBenchHtml = `<!doctype html>
             const id = document.createElement('td'); id.textContent = record.recordId;
             const status = document.createElement('td'); status.dataset.recordStatus = record.recordId; status.textContent = record.status;
             const action = document.createElement('td');
-            const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Deactivate'; button.dataset.actionRecordId = record.recordId; if (record.recordId === 'beacon') button.dataset.testid = 'beacon-action'; button.disabled = record.status === 'inactive';
+            const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Deactivate'; button.dataset.actionRecordId = record.recordId; button.dataset.recordId = record.recordId; button.dataset.testid = record.recordId === 'beacon' ? 'beacon-action' : 'record-action'; button.disabled = record.status === 'inactive';
             button.addEventListener('click', async () => {
               const selectedRecordId = row.dataset.recordId;
               if (!selectedRecordId) return;
-              button.disabled = true; result.textContent = 'Updating ' + record.name + '…'; result.dataset.kind = '';
-              const actionContext = nextActionContext; nextActionContext = null;
-              const actionId = actionContext ? actionContext.actionId : crypto.randomUUID();
-              const requestId = actionContext ? actionContext.requestId : crypto.randomUUID();
-              try {
-                const update = await fetch('/api/records/' + encodeURIComponent(selectedRecordId) + '/deactivate', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', 'X-BrowserProof-Run-Id': runId, 'X-BrowserProof-Action-Id': actionId, 'X-BrowserProof-Request-Id': requestId, 'X-BrowserProof-Observation-Id': observationId },
-                  body: JSON.stringify({ runId })
-                });
-                const payload = await update.json();
-                if (!update.ok || payload.success !== true) throw new Error(payload.error || 'Update failed.');
-                const current = document.querySelector('[data-record-status="' + selectedRecordId + '"]');
-                if (current) current.textContent = payload.record.status;
-                result.textContent = 'Record updated successfully'; result.dataset.kind = 'success';
-              } catch (error) {
-                result.textContent = error instanceof Error ? error.message : 'Update failed.'; result.dataset.kind = 'error'; button.disabled = false;
-              }
+              button.disabled = true;
+              await deactivateRecord(selectedRecordId);
+              if (result.dataset.kind === 'error') button.disabled = false;
             });
             action.append(button); row.append(name, id, status, action); list.append(row);
           }
@@ -160,6 +212,38 @@ const adminBenchHtml = `<!doctype html>
             void fetch('/api/render-ready', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId }) });
           }
         } catch (error) { result.textContent = error instanceof Error ? error.message : 'Could not load records.'; result.dataset.kind = 'error'; }
+      }
+      function refreshSelectionState() {
+        const selected = localStorage.getItem(storageKey);
+        const validSelection = selected === 'beacon';
+        const status = document.querySelector('#selection-state');
+        status.textContent = validSelection ? 'Selected: Beacon (beacon)' : 'No record selected.';
+        status.dataset.selectedRecordId = validSelection ? selected : '';
+        for (const option of document.querySelectorAll('#selection-options button')) {
+          const pressed = validSelection && option.dataset.recordId === selected;
+          option.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+        }
+      }
+      async function deactivateRecord(selectedRecordId) {
+        if (!selectedRecordId) return;
+        result.textContent = 'Updating ' + selectedRecordId + '…'; result.dataset.kind = '';
+        const actionContext = nextActionContext; nextActionContext = null;
+        const actionId = actionContext ? actionContext.actionId : crypto.randomUUID();
+        const requestId = actionContext ? actionContext.requestId : crypto.randomUUID();
+        try {
+          const update = await fetch('/api/records/' + encodeURIComponent(selectedRecordId) + '/deactivate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-BrowserProof-Run-Id': runId, 'X-BrowserProof-Action-Id': actionId, 'X-BrowserProof-Request-Id': requestId, 'X-BrowserProof-Observation-Id': observationId },
+            body: JSON.stringify({ runId })
+          });
+          const payload = await update.json();
+          if (!update.ok || payload.success !== true) throw new Error(payload.error || 'Update failed.');
+          const current = document.querySelector('[data-record-status="' + selectedRecordId + '"]');
+          if (current) current.textContent = payload.record.status;
+          result.textContent = 'Record updated successfully'; result.dataset.kind = 'success';
+        } catch (error) {
+          result.textContent = error instanceof Error ? error.message : 'Update failed.'; result.dataset.kind = 'error';
+        }
       }
       void render();
     })();
@@ -195,7 +279,7 @@ function makeAppServer(states: Map<string, RunState>): Server {
   return createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? "/", "http://adminbench.local");
-      if (request.method === "GET" && url.pathname === "/") {
+      if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/adminbench/editor")) {
         response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); response.end(adminBenchHtml); return;
       }
       if (request.method === "GET" && url.pathname === "/api/records") {

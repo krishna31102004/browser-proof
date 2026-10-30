@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
+import { chromium, type Browser } from "playwright";
 import { startAdminBench, type AdminBenchServer, type AdminRecord } from "./server.js";
 
 let servers: AdminBenchServer;
+let browser: Browser;
 let appUrl: string;
 let controlUrl: string;
 before(async () => {
@@ -12,8 +14,9 @@ before(async () => {
   if (!appAddress || typeof appAddress === "string" || !controlAddress || typeof controlAddress === "string") throw new Error("AdminBench listeners did not bind TCP ports");
   appUrl = `http://127.0.0.1:${appAddress.port}`;
   controlUrl = `http://127.0.0.1:${controlAddress.port}`;
+  browser = await chromium.launch({ headless: true });
 });
-after(async () => { await servers.close(); });
+after(async () => { await browser.close(); await servers.close(); });
 
 async function reset(runId: string): Promise<void> {
   const response = await fetch(`${controlUrl}/__browserproof/reset`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runId }) });
@@ -67,7 +70,7 @@ describe("AdminBench isolated business and control planes", () => {
     assert.match(page, /actionContext \? actionContext\.actionId : crypto\.randomUUID\(\)/);
     assert.match(page, /result\.dataset\.testid = 'render-pending'/);
     assert.match(page, /row\.dataset\.testid = 'record-row'/);
-    assert.match(page, /button\.dataset\.testid = 'beacon-action'/);
+    assert.match(page, /button\.dataset\.testid = record\.recordId === 'beacon' \? 'beacon-action' : 'record-action'/);
 
     // Opt-in browser request still receives genuine backend records. The independent fixture gate
     // records that fetch and keeps DOM insertion pending until the control listener releases it.
@@ -92,6 +95,88 @@ describe("AdminBench isolated business and control planes", () => {
     assert.equal((await fetch(`${controlUrl}/__browserproof/effects?runId=${runId}`).then((response) => response.json()) as { effects: unknown[] }).effects.length, 0);
     assert.deepEqual((await state(runId)).records.map(({ recordId, status }) => [recordId, status]), [["alice", "active"], ["beacon", "active"], ["cirrus", "active"]]);
     assert.deepEqual(await fetch(`${controlUrl}/__browserproof/render/status?runId=${otherRunId}`).then((response) => response.json()), { runId: otherRunId, enabled: false, recordsFetched: false, recordIds: [], withheld: false, released: false, inserted: false });
+  });
+
+  it("serves a genuine same-tab Beacon editor link and a user-click-created popup when its real target changes", async () => {
+    const runId = "admin-popup-browser";
+    await reset(runId);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(`${appUrl}/?workflow=popup-context&runId=${runId}`);
+    const link = page.getByTestId("open-beacon-editor");
+    await link.waitFor({ state: "visible" });
+    assert.match(await link.getAttribute("href") ?? "", /^\/adminbench\/editor\?workflow=popup-context&runId=admin-popup-browser&recordId=beacon$/);
+    assert.equal((await page.locator('[data-testid="record-action"][data-record-id="alice"]').count()), 1);
+
+    // Clean behavior: the actual anchor click stays in this Page.
+    await link.click();
+    await page.waitForURL(/\/adminbench\/editor\?workflow=popup-context/);
+    assert.equal(context.pages().length, 1);
+    assert.equal(await page.getByTestId("editor-record-id").getAttribute("data-record-id"), "beacon");
+    await context.close();
+
+    // Faulted behavior: the same observed link is retargeted, then the real click creates the child Page.
+    const faultContext = await browser.newContext();
+    const parent = await faultContext.newPage();
+    await parent.goto(`${appUrl}/?workflow=popup-context&runId=${runId}`);
+    const observedLink = parent.getByTestId("open-beacon-editor");
+    await observedLink.waitFor({ state: "visible" });
+    await observedLink.evaluate((anchor) => { (anchor as HTMLAnchorElement).target = "_blank"; });
+    const popupPromise = parent.waitForEvent("popup");
+    await observedLink.click();
+    const popup = await popupPromise;
+    await popup.waitForLoadState("domcontentloaded");
+    assert.notEqual(popup, parent);
+    assert.equal(await popup.opener(), parent);
+    assert.equal(faultContext.pages().length, 2);
+    assert.match(popup.url(), /^http:\/\/127\.0\.0\.1:\d+\/adminbench\/editor\?workflow=popup-context&runId=admin-popup-browser&recordId=beacon$/);
+    assert.equal(await popup.getByTestId("editor-record-id").getAttribute("data-record-id"), "beacon");
+    await faultContext.close();
+  });
+
+  it("persists storage selection in the browser, rejects a cleared confirmation without a POST, and recovers by visible reselection", async () => {
+    const runId = "admin-storage-browser";
+    await reset(runId);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    let businessPosts = 0;
+    page.on("request", (request) => { if (request.method() === "POST" && /\/api\/records\/[^/]+\/deactivate$/.test(request.url())) businessPosts += 1; });
+    await page.goto(`${appUrl}/?workflow=storage-clear&runId=${runId}`);
+    const key = `browserproof:selected-record:${runId}`;
+    await page.getByTestId("select-record-beacon").click();
+    assert.equal(await page.evaluate((storageKey) => localStorage.getItem(storageKey), key), "beacon");
+    assert.equal(await page.getByTestId("selection-state").getAttribute("data-selected-record-id"), "beacon");
+
+    const beforeClear = await page.evaluate(() => ({ origin: location.origin, keys: Object.keys(localStorage).sort(), value: localStorage.getItem(`browserproof:selected-record:${new URLSearchParams(location.search).get("runId")}`), cookie: document.cookie }));
+    await page.evaluate(() => { localStorage.clear(); window.dispatchEvent(new StorageEvent("storage", { key: null })); });
+    const afterClear = await page.evaluate(() => ({ origin: location.origin, keys: Object.keys(localStorage).sort(), cookie: document.cookie }));
+    assert.deepEqual(beforeClear.keys, [key]);
+    assert.equal(beforeClear.value, "beacon");
+    assert.equal(afterClear.origin, beforeClear.origin);
+    assert.deepEqual(afterClear.keys, []);
+    assert.equal(afterClear.cookie, beforeClear.cookie);
+    assert.equal(await page.getByTestId("selection-state").getAttribute("data-selected-record-id"), "");
+
+    await page.getByTestId("confirm-deactivation").click();
+    await page.getByTestId("result").waitFor({ state: "visible" });
+    assert.match(await page.getByTestId("result").textContent() ?? "", /No valid record is selected/);
+    assert.equal(businessPosts, 0);
+    assert.equal((await fetch(`${controlUrl}/__browserproof/effects?runId=${runId}`).then((response) => response.json()) as { effects: unknown[] }).effects.length, 0);
+
+    await page.getByTestId("select-record-beacon").click();
+    assert.equal(await page.evaluate((storageKey) => localStorage.getItem(storageKey), key), "beacon");
+    await page.evaluate(() => {
+      const helpers = window as unknown as Window & { __browserproofSetObservation: (id: string) => void; __browserproofSetNextActionContext: (actionId: string, requestId: string) => boolean };
+      helpers.__browserproofSetObservation("storage-observation"); helpers.__browserproofSetNextActionContext("storage-action", "storage-request");
+    });
+    const responsePromise = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/api/records/beacon/deactivate"));
+    await page.getByTestId("confirm-deactivation").click();
+    assert.equal((await responsePromise).status(), 200);
+    assert.equal(businessPosts, 1);
+    const ledger = await fetch(`${controlUrl}/__browserproof/effects?runId=${runId}`).then((response) => response.json()) as { effects: Array<{ entityId: string; actionId: string; requestId: string; observationId: string }> };
+    assert.equal(ledger.effects.length, 1);
+    assert.deepEqual({ entityId: ledger.effects[0]?.entityId, actionId: ledger.effects[0]?.actionId, requestId: ledger.effects[0]?.requestId, observationId: ledger.effects[0]?.observationId }, { entityId: "beacon", actionId: "storage-action", requestId: "storage-request", observationId: "storage-observation" });
+    await context.close();
   });
 
   it("requires correlation IDs, rejects unknown records, and independently records a real mutation", async () => {

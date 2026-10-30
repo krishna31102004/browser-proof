@@ -67,7 +67,13 @@ export type BrowserStateFaultSchedule =
   | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "supportdesk-session-expire-v1"; type: "session_expire"; seed: string; target: { method: "POST"; path: "/api/orders/A123/refund" }; trigger: "after_authenticated_observation_before_refund_action"; occurrenceCount: 1; invalidation: "exact_observed_server_session" }
   | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "supportdesk-navigation-abort-v1"; type: "navigation_abort"; seed: string; target: { method: "GET"; path: "/refund?workflow=navigation-refund"; resourceType: "document"; mainFrame: true }; trigger: "first_agent_main_frame_navigation"; occurrenceCount: 1; abortCode: "failed" };
 
-export type FaultScheduleDefinition = FaultSchedule | AdminBenchFaultSchedule | NetworkFaultSchedule | BrowserStateFaultSchedule;
+export type ContextFaultType = "popup_context_shift" | "storage_clear";
+export type ContextFaultScenarioId = "adminbench-popup-context-shift-v1" | "adminbench-storage-clear-v1";
+export type ContextFaultSchedule =
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "adminbench-popup-context-shift-v1"; type: "popup_context_shift"; seed: string; target: { app: "adminbench"; path: "/adminbench/editor"; recordId: "beacon" }; trigger: "after_agent_link_observed_before_link_click"; occurrenceCount: 1 }
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "adminbench-storage-clear-v1"; type: "storage_clear"; seed: string; target: { app: "adminbench"; storage: "localStorage"; keyPrefix: "browserproof:selected-record:"; recordId: "beacon" }; trigger: "after_agent_selection_observed_before_confirm"; occurrenceCount: 1 };
+
+export type FaultScheduleDefinition = FaultSchedule | AdminBenchFaultSchedule | NetworkFaultSchedule | BrowserStateFaultSchedule | ContextFaultSchedule;
 
 export interface RefundEffect {
   effectId: string;

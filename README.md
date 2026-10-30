@@ -83,6 +83,17 @@ The checked-in schedule is a source for new browser runs. The vulnerable command
 
 Each runner execution is written under ignored `artifacts/<runId>/` with a versioned manifest, scenario, schedule, events JSONL, independently observed effects, result, Playwright trace and screenshots. Trace inspection is local: `pnpm exec playwright show-trace artifacts/<RUN_ID>/trace.zip`.
 
+### Popup and storage context faults (Prompt 09)
+
+```bash
+pnpm bp run --scenario context-faults --fault popup_context_shift --agent vulnerable --mode faulted --seed popup-fault-01
+pnpm bp run --scenario context-faults --fault storage_clear --agent hardened --mode faulted --seed storage-fault-01
+pnpm bp verify --scenario context-faults
+pnpm bp repro artifacts/<FAULTED_RUN_ID> --times 3
+```
+
+`popup_context_shift` changes the observed same-origin Beacon editor link so the real click opens a child Page. The vulnerable reference policy remains in the open parent and commits Alice; the hardened policy verifies the actual popup and commits Beacon. `storage_clear` calls `localStorage.clear()` in the browser after Beacon was selected through the visible UI. The vulnerable policy then sees the missing-selection error and produces no effect; the hardened policy observes the lost selection, reselects Beacon through the UI, and commits once. Both faults preserve cookies/session state and are independently checked against the AdminBench effect ledger. The Prompt 09 local gate requires 36 artifact-validated Chromium runs (18 per fault across six 3/3 clean, faulted and fresh-reproduction cells). The current source adds that full matrix to CI; count the catalog as 10/10 only after the source-matched hosted Actions gate passes.
+
 ## Static evidence workbench
 
 Five checked-in cases are exported from fresh, genuine local Playwright runs: SupportDesk clean and response-loss, AdminBench vulnerable clean, and vulnerable/hardened runs under the same DOM reorder schedule. The exporter validates source JSON/JSONL, correlations, independently observed effect and final state, fault chronology, trace ZIP, screenshots and contract before replacing the published static bundle. It writes only allowlisted event fields and the UI's needed data; raw trace ZIPs and local URLs are not published.
@@ -107,7 +118,7 @@ The viewer has no runtime backend, credentials, or environment-variable dependen
 
 ## Continuous integration
 
-`.github/workflows/browserproof.yml` runs for pushes to `main`, pull requests to `main`, and manual dispatch. It installs with the frozen lockfile, installs Chromium, typechecks and tests all workspaces, checks both regression outcomes and the full M0/AdminBench gates, executes the real 27-trial network-fault and 54-trial browser-state campaigns, builds the static viewer and smoke-tests the production output. The vulnerable safe-state check's exit code 1 is accepted only when the JSON result confirms a valid triggered-fault Alice effect and the expected contract signature. The browser-state job asserts all six cells are 3/3 for each fault, 18/18 valid artifacts, complete independent observers, paired schedules, fresh repro signatures, and unique runs. Failure runs upload local artifacts and command logs for seven days. Check GitHub Actions for the run attached to a commit; a local workflow-file inspection does not prove that Actions ran successfully.
+`.github/workflows/browserproof.yml` runs for pushes to `main`, pull requests to `main`, and manual dispatch. It installs with the frozen lockfile, installs Chromium, typechecks and tests all workspaces, checks both regression outcomes and the full M0/AdminBench gates, executes the real 27-trial network-fault, 54-trial browser-state and 36-trial popup/storage campaigns, builds the static viewer and smoke-tests the production output. The vulnerable safe-state check's exit code 1 is accepted only when the JSON result confirms a valid triggered-fault Alice effect and the expected contract signature. The browser-state and context-fault jobs assert every six-cell matrix, complete independent observers, paired schedules, fresh replay signatures, unique runs, artifact evidence and expected effects. Failure runs upload local artifacts and command logs for seven days. Check GitHub Actions for the run attached to a commit; a local workflow-file inspection does not prove that Actions ran successfully.
 
 Day 4 source verification passed in [GitHub Actions run 40833167948](https://github.com/krishna31102004/browser-proof/actions/runs/40833167948) on commit `0c94ba99caf1b04c39702d3fa065bb2cd8862209`.
 
@@ -116,3 +127,5 @@ Prompt 08's three browser-state faults and preserved regressions passed in [GitH
 ## Scope status
 
 Verified here: M0 refund response loss, the AdminBench DOM observation/action race, three controlled network faults, and the three Prompt 08 browser-state faults after the six-cell policy/reproduction campaign and hosted regression gate pass. Eight fault types are verified; two remain. There is no frozen 36-case benchmark and no measured 90% seeded-failure detection rate. The public deployment serves static recorded evidence only. ShopBench and Stagehand remain out of scope.
+
+Prompt 09's `popup_context_shift` and `storage_clear` passed 36/36 local artifact-validated Chromium trials and independent source/artifact review. Their source-matched GitHub Actions run is pending, so the fully accepted hosted catalog remains eight fault types until that run succeeds. The frozen benchmark is still **0/36 NOT EXECUTED**; seeded-failure detection remains **UNMEASURED**. The public Evidence Journal and its deployment are unchanged. ShopBench and Stagehand remain **NOT IMPLEMENTED**.

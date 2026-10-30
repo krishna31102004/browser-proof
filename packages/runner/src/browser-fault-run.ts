@@ -153,7 +153,7 @@ export async function executeBrowserStateRun(options: BrowserStateRunOptions): P
       let renderState = await json<{ runId: string; enabled: boolean; recordsFetched: boolean; recordIds: string[]; withheld: boolean; released: boolean; inserted: boolean }>(`${controlUrl}/__browserproof/render/status?runId=${encodeURIComponent(runId)}`);
       const renderDeadline = Date.now() + 3000;
       while (!(renderState.recordsFetched && renderState.withheld && !renderState.inserted) && Date.now() < renderDeadline) { await new Promise((resolve) => setTimeout(resolve, 10)); renderState = await json(`${controlUrl}/__browserproof/render/status?runId=${encodeURIComponent(runId)}`); }
-      const absentCount = await page.locator('[data-record-id="beacon"]').count();
+      const absentCount = await page.locator('[data-testid="record-row"][data-record-id="beacon"]').count();
       if (!renderState.recordsFetched || renderState.recordIds.length !== 3 || !renderState.withheld || absentCount !== 0) throw new Error("Delayed-render fixture did not reach its controlled post-fetch, pre-insertion boundary");
       renderSnapshots.push({ sequence: "pre_render", fetchedRecordIds: renderState.recordIds, pendingVisible: await page.getByTestId("render-pending").isVisible(), beaconDomCount: absentCount, withheld: renderState.withheld, released: renderState.released, inserted: renderState.inserted });
       await page.screenshot({ path: join(screenshotsDir, "before-agent.png"), fullPage: true });
@@ -167,9 +167,9 @@ export async function executeBrowserStateRun(options: BrowserStateRunOptions): P
         const released = await json<{ runId: string; released: boolean }>(`${controlUrl}/__browserproof/render/release`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runId }) });
         if (!released.released || released.runId !== runId) throw new Error("Render barrier release was not confirmed");
         await events.record("runner", "render.barrier_released", { reason, runId });
-        await page.locator('[data-record-id="beacon"]').waitFor({ state: "visible", timeout: 3000 });
+        await page.locator('[data-testid="record-row"][data-record-id="beacon"]').waitFor({ state: "visible", timeout: 3000 });
         const after = await json<{ inserted: boolean; recordIds: string[] }>(`${controlUrl}/__browserproof/render/status?runId=${encodeURIComponent(runId)}`);
-        renderSnapshots.push({ sequence: "post_release", fetchedRecordIds: after.recordIds, beaconDomCount: await page.locator('[data-record-id="beacon"]').count(), inserted: after.inserted, releaseReason: reason });
+        renderSnapshots.push({ sequence: "post_release", fetchedRecordIds: after.recordIds, beaconDomCount: await page.locator('[data-testid="record-row"][data-record-id="beacon"]').count(), inserted: after.inserted, releaseReason: reason });
         await events.record("observer", "render.dom_inserted", renderSnapshots.at(-1)!);
       };
       if (!faultApplied) await releaseRender("clean_or_unmatched_fixture_ready_before_agent");
