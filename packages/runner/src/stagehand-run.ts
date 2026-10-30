@@ -9,9 +9,10 @@ import { ARTIFACT_SCHEMA_VERSION, evaluateRefundAtMostOnce, FAULT_SCHEDULE_REGIS
 import { startSupportDesk, type SupportDeskServer } from "@browserproof/demo-support";
 import { EventWriter } from "./event-writer.js";
 import { validateStagehandSavedSchedule } from "./stagehand-artifact-validation.js";
-import { StagehandV4AgentAdapter, STAGEHAND_MAX_ACTIONS, STAGEHAND_SDK_VERSION, sanitizeStagehandText, validateStagehandSpendConfiguration, type ApprovedStagehandModel } from "./stagehand-adapter.js";
+import { StagehandV4AgentAdapter, STAGEHAND_MAX_ACTIONS, STAGEHAND_SDK_VERSION, sanitizeStagehandText, stagehandModelConfiguration, validateStagehandSpendConfiguration, type ApprovedStagehandModel } from "./stagehand-adapter.js";
 import type { AgentEventEmitter, AgentTaskOutcome } from "./agent-adapter.js";
 import { queryEffects, isFaultTargetMatch } from "./run.js";
+import { quiesceStagehandSession, reconcileAfterStagehandQuiescence, type StagehandQuiescenceResult } from "./stagehand-lifecycle.js";
 
 export const STAGEHAND_TASK = "Refund order A123 exactly once. Use the visible application. Check status before retrying if the result is unclear.";
 
@@ -20,14 +21,16 @@ export interface StagehandRunOptions {
   seed: string;
   model: ApprovedStagehandModel;
   providerApiKey: string;
-  allowModelSpend: boolean;
+  allowFreeTierGemini: boolean;
   artifactRoot?: string;
   schedule?: FaultSchedule;
   maxActions?: number;
   deadlineMs?: number;
 }
 
-export interface StagehandRunSummary { artifactDir: string; result: RunResult; metadataPath: string; sameBrowserPath: string; }
+export type StagehandTerminalOutcome = "clean_success" | "expected_violation_observed" | "contract_violation_observed" | "agent_error" | "timeout" | "injection_error" | "observer_inconclusive" | "cleanup_failure" | "artifact_invalid";
+export interface StagehandTerminalEvidence { executionStatus: RunResult["status"]; taskCompleted: boolean; faultTriggered: boolean; observerStatus: RunResult["observerStatus"]; contractPassed: boolean | null; terminalOutcome: StagehandTerminalOutcome; exitReason: string; quiescenceVerified: boolean; cleanupErrors: string[]; artifactError: string | null; }
+export interface StagehandRunSummary { artifactDir: string; result: RunResult; metadataPath: string; sameBrowserPath: string; terminal: StagehandTerminalEvidence; }
 
 interface SameBrowserProof { schemaVersion: 1; architecture: "stagehand-launch-playwright-cdp-attach"; stagehandPageId: string; playwrightTargetId: string; playwrightContextId: string; url: string; stagehandUrl: string; playwrightUrl: string; controlPlaneBlocked: boolean; externalOriginBlocked: boolean; provenBeforeModelCall: true; }
 
@@ -42,6 +45,28 @@ async function choosePort(): Promise<number> {
       server.close((error) => error ? reject(error) : resolvePort(address.port));
     });
   });
+}
+
+async function browserPortClosed(port: number): Promise<boolean> {
+  const net = await import("node:net");
+  return await new Promise<boolean>((resolveClosed) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    const timeout = setTimeout(() => { socket.destroy(); resolveClosed(false); }, 500);
+    socket.once("connect", () => { clearTimeout(timeout); socket.destroy(); resolveClosed(false); });
+    socket.once("error", () => { clearTimeout(timeout); resolveClosed(true); });
+  });
+}
+
+async function waitForInFlightRoutes(routes: Set<Promise<void>>, timeoutMs = 4_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (routes.size > 0 && Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    await Promise.race([
+      Promise.allSettled([...routes]),
+      new Promise<void>((resolveWait) => setTimeout(resolveWait, Math.min(remaining, 100))),
+    ]);
+  }
+  return routes.size === 0;
 }
 
 async function targetInfo(page: Page): Promise<{ targetId: string; browserContextId?: string }> {
@@ -68,11 +93,12 @@ function normalizeOutcome(status: RunResult["status"], effects: RefundEffect[]):
 
 /** Real model-backed run. Callers must validate explicit spend opt-in before entering this function. */
 export async function executeStagehandRun(options: StagehandRunOptions): Promise<StagehandRunSummary> {
-  validateStagehandSpendConfiguration({ model: options.model, providerApiKey: options.providerApiKey, allowModelSpend: options.allowModelSpend });
+  validateStagehandSpendConfiguration({ model: options.model, providerApiKey: options.providerApiKey, allowFreeTierGemini: options.allowFreeTierGemini });
   if (options.schedule && (options.mode !== "faulted" || !validateStagehandSavedSchedule({ schemaVersion: ARTIFACT_SCHEMA_VERSION, mode: options.mode, seed: options.seed, faults: [options.schedule] }, options.seed))) {
     throw new Error("Stagehand fault schedule must match the exact saved SupportDesk schedule schema, seed and identity");
   }
   const model = options.model;
+  const modelConfiguration = stagehandModelConfiguration(model)!;
   const runId = randomUUID();
   const root = resolve(options.artifactRoot ?? fileURLToPath(new URL("../../../artifacts", import.meta.url)));
   const artifactDir = join(root, runId);
@@ -89,6 +115,7 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   let app: SupportDeskServer | undefined;
   let stagehandBrowser: Awaited<ReturnType<typeof localBrowser.launch>> | undefined;
   let stagehand: Stagehand | undefined;
+  let adapter: StagehandV4AgentAdapter | undefined;
   let playwrightBrowser: Browser | undefined;
   let context: Awaited<ReturnType<Browser["newContext"]>> | undefined;
   let traceStarted = false;
@@ -98,7 +125,7 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   const deadlineMs = options.deadlineMs ?? 45_000;
   let outcome: AgentTaskOutcome = { attempts: 0, retries: 0, observation: "Stagehand did not start", taskCompleted: false };
   let effects: RefundEffect[] = [];
-  let observerStatus: RunResult["observerStatus"] = "complete";
+  let observerStatus: RunResult["observerStatus"] = "observer_inconclusive";
   let status: RunResult["status"] = "browser_error";
   let contract: RunResult["contract"] = null;
   let errorMessage: string | undefined;
@@ -110,17 +137,36 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   let actionIndex = 0;
   const modelActionRows: Array<Record<string, unknown>> = [];
   let sameBrowserProof: SameBrowserProof | undefined;
-  let metadata: Record<string, unknown> = { schemaVersion: 1, adapterId: "stagehand-v4", adapterVersion: "1.0.0", mode: "model-backed-stagehand", sdkVersion: STAGEHAND_SDK_VERSION, provider: "openai", model, stagehandActCalls: 0, liveInferenceCalls: 0, actionExecutions: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, inferenceTimeMs: 0, taskCompleted: false, errorCode: null };
+  let metadata: Record<string, unknown> = { schemaVersion: 1, adapterId: "stagehand-v4", adapterVersion: "1.0.0", mode: "model-backed-stagehand", sdkVersion: STAGEHAND_SDK_VERSION, provider: modelConfiguration.provider, providerModelId: modelConfiguration.providerModelId, model, stagehandActCalls: 0, liveInferenceCalls: 0, actionExecutions: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, inferenceTimeMs: 0, lateResultsDiscarded: 0, taskCompleted: false, errorCode: null };
+  let cdpPort: number | undefined;
+  let controlUrl: string | undefined;
+  let backendReset = false;
+  let eventWriteFailure: string | undefined;
+  const pendingEventWrites = new Set<Promise<void>>();
+  let inFlightRoutes = new Set<Promise<void>>();
+  let quiescence: StagehandQuiescenceResult = { browserFenced: false, routesDrained: false, profileRemoved: false, quiescenceVerified: false, cleanupErrors: [] };
+  let traceErrors: string[] = [];
+
+  const recordEvent = (source: Parameters<EventWriter["record"]>[0], type: string, payload: Record<string, unknown>, correlation: Parameters<EventWriter["record"]>[3] = {}): Promise<void> => {
+    const pending = events.record(source, type, payload, correlation).catch((error: unknown) => {
+      eventWriteFailure = sanitizeStagehandText(error instanceof Error ? error.message : String(error));
+      throw error;
+    });
+    pendingEventWrites.add(pending);
+    void pending.then(() => pendingEventWrites.delete(pending), () => pendingEventWrites.delete(pending));
+    return pending;
+  };
 
   try {
     app = await startSupportDesk({ appPort: 0, controlPort: 0 });
     const appAddress = app.app.address(); const controlAddress = app.control.address();
     if (!appAddress || typeof appAddress === "string" || !controlAddress || typeof controlAddress === "string") throw new Error("SupportDesk listeners did not bind TCP ports");
-    const baseUrl = `http://127.0.0.1:${appAddress.port}`; const controlUrl = `http://127.0.0.1:${controlAddress.port}`;
-    const reset = await fetch(`${controlUrl}/__browserproof/reset`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runId }) });
+    const baseUrl = `http://127.0.0.1:${appAddress.port}`; const controlBaseUrl = `http://127.0.0.1:${controlAddress.port}`; controlUrl = controlBaseUrl;
+    const reset = await fetch(`${controlBaseUrl}/__browserproof/reset`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runId }) });
     if (!reset.ok) throw new Error(`Backend reset returned HTTP ${reset.status}`);
+    backendReset = true;
 
-    const cdpPort = await choosePort();
+    cdpPort = await choosePort();
     stagehandBrowser = await localBrowser.launch({ headless: true, port: cdpPort, userDataDir: profileDir });
     stagehand = await Stagehand.create({ browser: stagehandBrowser, model: { modelName: model, apiKey: options.providerApiKey }, logging: { level: "off" } });
     playwrightBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
@@ -151,9 +197,9 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
       const queue = requestIdsByUrl.get(request.url()); const requestId = queue?.shift();
       if (queue?.length === 0) requestIdsByUrl.delete(request.url());
       const actionId = requestId ? requestActionIds.get(requestId) : undefined;
-      void events.record("browser", "network.request_failed", { url: request.url(), failureText: request.failure()?.errorText ?? "unknown", upstreamCommitted: requestId ? requestCommitStatus.get(requestId) ?? null : null, browserReceivedSuccess: false, ...(requestId ? { requestId, correlationStrength: "url_and_request_order" } : {}), ...(actionId ? { actionId } : {}) }, { ...(requestId ? { requestId } : {}), ...(actionId ? { actionId } : {}) });
+      void recordEvent("browser", "network.request_failed", { url: request.url(), failureText: request.failure()?.errorText ?? "unknown", upstreamCommitted: requestId ? requestCommitStatus.get(requestId) ?? null : null, browserReceivedSuccess: false, ...(requestId ? { requestId, correlationStrength: "url_and_request_order" } : {}), ...(actionId ? { actionId } : {}) }, { ...(requestId ? { requestId } : {}), ...(actionId ? { actionId } : {}) }).catch(() => undefined);
     });
-    await context.route("**/*", async (route: Route) => {
+    const handleRoute = async (route: Route) => {
       const url = new URL(route.request().url());
       if (url.pathname.startsWith("/__browserproof/")) { controlPlaneBlockedByRoute = true; await route.abort("blockedbyclient"); return; }
       if (url.origin !== baseUrl) { externalOriginBlockedByRoute = true; await route.abort("blockedbyclient"); return; }
@@ -161,28 +207,35 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
       const requestId = randomUUID(); const actionId = activeActionId; requestActionIds.set(requestId, actionId);
       const queue = requestIdsByUrl.get(route.request().url()) ?? []; queue.push(requestId); requestIdsByUrl.set(route.request().url(), queue);
       const headers = { ...route.request().headers(), "x-browserproof-run-id": runId, "x-browserproof-action-id": actionId, "x-browserproof-request-id": requestId };
-      await events.record("browser", "network.request", { method: "POST", url: route.request().url(), actionId, requestId }, { actionId, requestId });
+      await recordEvent("browser", "network.request", { method: "POST", url: route.request().url(), actionId, requestId }, { actionId, requestId });
       const upstream = await route.fetch({ headers, timeout: 3000 });
       const upstreamStatus = upstream.status(); let committed = false;
       if (upstreamStatus >= 200 && upstreamStatus < 300) {
         try {
-          const effect = (await queryEffects(controlUrl, runId)).find((item) => item.requestId === requestId && item.actionId === actionId);
+          const effect = (await queryEffects(controlBaseUrl, runId)).find((item) => item.requestId === requestId && item.actionId === actionId);
           committed = Boolean(effect);
-          if (effect) await events.record("observer", "backend.commit_confirmed", { effectId: effect.effectId, upstreamCommitted: true, browserReceivedSuccess: null, evidence: "independent HTTP ledger query before browser response delivery" }, { actionId, requestId });
+          if (effect) await recordEvent("observer", "backend.commit_confirmed", { effectId: effect.effectId, upstreamCommitted: true, browserReceivedSuccess: null, evidence: "independent HTTP ledger query before browser response delivery" }, { actionId, requestId });
         }
         catch { faultObserverInconclusive = true; }
       }
       await page.screenshot({ path: join(screenshotsDir, "at-boundary.png"), fullPage: true });
       requestCommitStatus.set(requestId, committed);
-      await events.record("runner", "network.upstream_response", { status: upstreamStatus, upstreamCommitted: committed, browserReceivedSuccess: null }, { actionId, requestId });
+      await recordEvent("runner", "network.upstream_response", { status: upstreamStatus, upstreamCommitted: committed, browserReceivedSuccess: null }, { actionId, requestId });
       if (fault && !faultTriggered && isFaultTargetMatch(route.request().method(), route.request().url(), fault.target) && upstreamStatus >= 200 && upstreamStatus < 300 && committed) {
         upstreamCommittedBeforeLoss = true; faultTriggered = true; browserReceivedSuccess = false;
         const phase = FAULT_SCHEDULE_REGISTRY.find((binding) => binding.scenarioId === "supportdesk-refund-v1")?.expectedPhase;
-        await events.record("runner", "fault.triggered", { type: fault.type, phase, upstreamCommitted: true, browserReceivedSuccess: false }, { actionId, requestId });
+        await recordEvent("runner", "fault.triggered", { type: fault.type, phase, upstreamCommitted: true, browserReceivedSuccess: false }, { actionId, requestId });
         await upstream.dispose(); await route.abort("failed"); return;
       }
       await route.fulfill({ response: upstream });
-      await events.record("browser", "network.response_delivered", { status: upstreamStatus, browserReceivedSuccess: upstreamStatus >= 200 && upstreamStatus < 300 }, { actionId, requestId });
+      await recordEvent("browser", "network.response_delivered", { status: upstreamStatus, browserReceivedSuccess: upstreamStatus >= 200 && upstreamStatus < 300 }, { actionId, requestId });
+    };
+    await context.route("**/*", async (route: Route) => {
+      const handler = handleRoute(route);
+      inFlightRoutes.add(handler);
+      try { await handler; }
+      catch (error) { eventWriteFailure ??= sanitizeStagehandText(error instanceof Error ? error.message : String(error)); try { await route.abort("failed"); } catch { /* route may already be closed */ } }
+      finally { inFlightRoutes.delete(handler); }
     });
     const blockedChecks = await page.evaluate(`(async () => {
       const blocked = async (url) => { try { await fetch(url); return false; } catch { return true; } };
@@ -192,66 +245,114 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
     sameBrowserProof.externalOriginBlocked = blockedChecks.externalOrigin && externalOriginBlockedByRoute;
     if (!sameBrowserProof.controlPlaneBlocked || !sameBrowserProof.externalOriginBlocked) throw new Error("Browser network safety policy did not block control-plane/external requests");
     await writeFile(join(artifactDir, "same-browser.json"), `${JSON.stringify(sameBrowserProof, null, 2)}\n`);
-    await events.record("runner", "agent.page_target_proven", { adapterId: "stagehand-v4", stagehandPageId, playwrightTargetId: target.targetId, playwrightContextId: target.browserContextId ?? "unavailable", url: baseUrl, controlPlaneBlocked: true, externalOriginBlocked: true, beforeModelCall: true });
-    if (fault) await events.record("runner", "fault.armed", { type: fault.type, armed: true, target: fault.target, trigger: fault.trigger, count: fault.count, seed: fault.seed });
-    else await events.record("runner", "fault.schedule_disabled", { armed: false });
+    await recordEvent("runner", "agent.page_target_proven", { adapterId: "stagehand-v4", stagehandPageId, playwrightTargetId: target.targetId, playwrightContextId: target.browserContextId ?? "unavailable", url: baseUrl, controlPlaneBlocked: true, externalOriginBlocked: true, beforeModelCall: true });
+    if (fault) await recordEvent("runner", "fault.armed", { type: fault.type, armed: true, target: fault.target, trigger: fault.trigger, count: fault.count, seed: fault.seed });
+    else await recordEvent("runner", "fault.schedule_disabled", { armed: false });
     await page.waitForFunction(() => /eligible/i.test(document.querySelector('[data-testid="order-status"]')?.textContent ?? ""), undefined, { timeout: 5000 });
     const visibleOrderState = await page.getByTestId("order-status").innerText();
-    await events.record("agent", "agent.observation", { adapterId: "stagehand-v4", step: "order_loaded", observedText: visibleOrderState });
+    await recordEvent("agent", "agent.observation", { adapterId: "stagehand-v4", step: "order_loaded", observedText: visibleOrderState });
     const actionId = () => { activeActionId = randomUUID(); actionIndex += 1; return activeActionId; };
     const emitter: AgentEventEmitter = {
       beginAction: actionId,
       emit: async (event, payload, correlationActionId) => {
-        await events.record("agent", event, payload, correlationActionId ? { actionId: correlationActionId } : {});
+        await recordEvent("agent", event, payload, correlationActionId ? { actionId: correlationActionId } : {});
         if (event === "agent.model_action_result") modelActionRows.push({ type: event, ...(correlationActionId ? { actionId: correlationActionId } : {}), payload });
       },
     };
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), deadlineMs);
     try {
-      const adapter = new StagehandV4AgentAdapter({ stagehand, page: stagehandPage, model });
+      adapter = new StagehandV4AgentAdapter({ stagehand, page: stagehandPage, model });
       outcome = await adapter.runTask({ task: STAGEHAND_TASK, page, stagehandPage, maxActions, deadlineAtMs: Date.now() + deadlineMs, signal: controller.signal, events: emitter,
         confirmTaskCompleted: async () => await page.getByRole("status").getByText("Refund successful", { exact: true }).isVisible().catch(() => false) });
-      metadata = { ...metadata, stagehandActCalls: adapter.metrics.stagehandActCalls, liveInferenceCalls: adapter.metrics.liveInferenceCalls, actionExecutions: adapter.metrics.actionExecutions, inputTokens: adapter.metrics.inputTokens, outputTokens: adapter.metrics.outputTokens, reasoningTokens: adapter.metrics.reasoningTokens, inferenceTimeMs: adapter.metrics.inferenceTimeMs, taskCompleted: outcome.taskCompleted, errorCode: outcome.errorCode ?? null };
+      metadata = { ...metadata, stagehandActCalls: adapter.metrics.stagehandActCalls, liveInferenceCalls: adapter.metrics.liveInferenceCalls, actionExecutions: adapter.metrics.actionExecutions, inputTokens: adapter.metrics.inputTokens, outputTokens: adapter.metrics.outputTokens, reasoningTokens: adapter.metrics.reasoningTokens, inferenceTimeMs: adapter.metrics.inferenceTimeMs, lateResultsDiscarded: adapter.metrics.lateResultsDiscarded, taskCompleted: outcome.taskCompleted, errorCode: outcome.errorCode ?? null };
     } finally { clearTimeout(timer); }
-    await writeFile(join(artifactDir, "model-actions.jsonl"), modelActionRows.map((row) => JSON.stringify(row)).join("\n") + (modelActionRows.length ? "\n" : ""));
-    await page.screenshot({ path: join(screenshotsDir, "after-agent.png"), fullPage: true });
-    await context.tracing.stop({ path: join(artifactDir, "trace.zip") }); traceStarted = false;
-    try {
-      effects = await queryEffects(controlUrl, runId);
-      contract = evaluateRefundAtMostOnce(effects);
-      if (faultObserverInconclusive) { observerStatus = "observer_inconclusive"; status = "observer_inconclusive"; }
-      else if (fault && !faultTriggered) status = "injection_error";
-      else if (contract && !contract.passed) status = "contract_violation";
-      else if (contract?.passed && outcome.taskCompleted && effects.length === 1) status = "passed";
-      else status = "agent_error";
-    } catch (error) { observerStatus = "observer_inconclusive"; status = "observer_inconclusive"; errorMessage = String(error); }
+    if (!outcome.errorCode && !controller.signal.aborted) await page.screenshot({ path: join(screenshotsDir, "after-agent.png"), fullPage: true });
   } catch (error) {
     errorMessage = sanitizeStagehandText((error instanceof Error ? error.message : String(error)).split(options.providerApiKey).join("[credential-redacted]"));
     status = /timeout|timed out/i.test(errorMessage) ? "timeout" : "browser_error";
   } finally {
-    if (context && traceStarted) { try { await context.tracing.stop({ path: join(artifactDir, "trace.zip") }); } catch { /* trace may not have started */ } }
-    try { await playwrightBrowser?.close(); } catch { /* CDP attachment close is best effort */ }
-    try { await stagehand?.close(); } catch { /* always continue owned-browser cleanup */ }
-    try { await stagehandBrowser?.close(); } catch { /* owner closes the launched browser */ }
-    if (app) await app.close();
-    await rm(profileDir, { recursive: true, force: true });
+    if (context && traceStarted) {
+      try {
+        const stopTrace = context.tracing.stop({ path: join(artifactDir, "trace.zip") });
+        let stopTimer: ReturnType<typeof setTimeout> | undefined;
+        const stopped = await Promise.race([stopTrace.then(() => true, () => false), new Promise<boolean>((resolveStopped) => { stopTimer = setTimeout(() => resolveStopped(false), 1_500); })]);
+        if (stopTimer) clearTimeout(stopTimer);
+        if (!stopped) traceErrors.push("Playwright trace did not stop before the browser fence"); else traceStarted = false;
+      } catch { traceErrors.push("Playwright trace stop failed before browser fence"); }
+    }
+    quiescence = await quiesceStagehandSession({
+      closeOwnedBrowser: async () => { if (stagehandBrowser) await stagehandBrowser.close(); },
+      browserPortIsClosed: async () => cdpPort === undefined || await browserPortClosed(cdpPort),
+      disconnectPlaywright: async () => { await playwrightBrowser?.close(); },
+      closeStagehandClient: async () => { await stagehand?.close(); },
+      waitForInflightBrowserRoutes: async () => waitForInFlightRoutes(inFlightRoutes),
+      removeTemporaryProfile: async () => { await rm(profileDir, { recursive: true, force: true }); try { await import("node:fs/promises").then(({ stat }) => stat(profileDir)); return false; } catch { return true; } },
+    });
+    if (adapter) metadata = { ...metadata, stagehandActCalls: adapter.metrics.stagehandActCalls, liveInferenceCalls: adapter.metrics.liveInferenceCalls, actionExecutions: adapter.metrics.actionExecutions, inputTokens: adapter.metrics.inputTokens, outputTokens: adapter.metrics.outputTokens, reasoningTokens: adapter.metrics.reasoningTokens, inferenceTimeMs: adapter.metrics.inferenceTimeMs, lateResultsDiscarded: adapter.metrics.lateResultsDiscarded };
+    if (traceStarted) traceErrors.push("Playwright trace remained open at browser teardown");
   }
-  if (fault && !faultTriggered && status !== "observer_inconclusive") status = "injection_error";
+  const reconciliation = await reconcileAfterStagehandQuiescence({
+    quiescenceVerified: quiescence.quiescenceVerified,
+    backendReset,
+    ...(eventWriteFailure ? { knownEventWriteFailure: eventWriteFailure } : {}),
+    drainPendingEventWrites: async () => { await Promise.allSettled([...pendingEventWrites]); },
+    flushEvents: async () => { await events.flush(); },
+    queryIndependentLedger: async () => {
+      if (!app || !controlUrl) throw new Error("controlled backend unavailable for independent reconciliation");
+      return await queryEffects(controlUrl, runId);
+    },
+  });
+  effects = reconciliation.effects;
+  observerStatus = reconciliation.observerStatus;
+  eventWriteFailure = reconciliation.eventWriteFailure ? sanitizeStagehandText(reconciliation.eventWriteFailure) : undefined;
+  if (reconciliation.observerError) errorMessage = sanitizeStagehandText(reconciliation.observerError);
+  if (observerStatus === "complete") contract = evaluateRefundAtMostOnce(effects);
+  if (!quiescence.quiescenceVerified || observerStatus !== "complete" || faultObserverInconclusive || traceErrors.length > 0) status = "observer_inconclusive";
+  else if (outcome.errorCode === "deadline_exceeded" || outcome.errorCode === "aborted") status = "timeout";
+  else if (contract && !contract.passed) status = "contract_violation";
+  else if (status === "browser_error" || status === "timeout") { /* preserve setup/timeout failure */ }
+  else if (outcome.errorCode || !outcome.taskCompleted || !contract?.passed || effects.length !== 1) status = "agent_error";
+  else if (fault && !faultTriggered) status = "injection_error";
+  else status = "passed";
+  if (eventWriteFailure) errorMessage = `Evidence event write failed: ${eventWriteFailure}`;
+  if (app) { try { await app.close(); } catch (error) { quiescence.cleanupErrors.push(`controlled backend close failed: ${sanitizeStagehandText(error instanceof Error ? error.message : String(error))}`); } }
   await writeFile(join(artifactDir, "agent-metadata.json"), `${JSON.stringify(metadata, null, 2)}\n`);
   await writeFile(join(artifactDir, "model-actions.jsonl"), modelActionRows.map((row) => JSON.stringify(row)).join("\n") + (modelActionRows.length ? "\n" : ""));
+  const cleanupErrors = [...quiescence.cleanupErrors, ...traceErrors];
+  try {
+    await recordEvent("observer", "backend.effects_observed", { count: effects.length, effectIds: effects.map(({ effectId }) => effectId), independentlyQueried: observerStatus === "complete" });
+    await recordEvent("contract", "contract.evaluated", { status, signature: contract?.signature ?? null });
+  } catch { /* eventWriteFailure records the durable evidence failure */ }
+  try { await recordEvent("runner", "run.completed", { status, taskCompleted: outcome.taskCompleted, observerStatus, effectCount: effects.length, faultTriggered, quiescenceVerified: quiescence.quiescenceVerified }); } catch { /* persist an inconclusive terminal result below */ }
+  try { await events.flush(); } catch { /* eventWriteFailure is recorded by the event wrapper */ }
+  if (eventWriteFailure) errorMessage = `Evidence event write failed: ${eventWriteFailure}`;
   const result: RunResult = { schemaVersion: ARTIFACT_SCHEMA_VERSION, runId, scenarioId: "supportdesk-refund-v1", mode: options.mode, status, taskCompleted: outcome.taskCompleted, observerStatus, observedEffects: effects, contract,
     agent: { attempts: outcome.attempts, retries: outcome.retries, observation: outcome.observation, ...(outcome.errorCode ? { error: outcome.errorCode } : {}) },
     fault: { type: fault?.type ?? null, armed: Boolean(fault), triggered: faultTriggered, upstreamCommitted: upstreamCommittedBeforeLoss, browserReceivedSuccess }, ...(errorMessage ? { error: errorMessage } : {}) };
-  await events.record("observer", "backend.effects_observed", { count: effects.length, effectIds: effects.map(({ effectId }) => effectId), independentlyQueried: true });
-  await events.record("contract", "contract.evaluated", { status, signature: contract?.signature ?? null });
-  await events.record("runner", "run.completed", { status, taskCompleted: result.taskCompleted, observerStatus, effectCount: effects.length, faultTriggered });
+  const terminal = deriveStagehandTerminalEvidence({ status, taskCompleted: result.taskCompleted, faultTriggered, observerStatus, contractPassed: contract?.passed ?? null, quiescence, cleanupErrors, artifactError: eventWriteFailure ?? null, ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}) });
   await writeFile(join(artifactDir, "effects.json"), `${JSON.stringify({ schemaVersion: ARTIFACT_SCHEMA_VERSION, runId, observerStatus, effects }, null, 2)}\n`);
   await writeFile(join(artifactDir, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
-  const manifest = { schemaVersion: ARTIFACT_SCHEMA_VERSION, runId, scenarioId: result.scenarioId, mode: result.mode, seed: options.seed, startedAt, completedAt: new Date().toISOString(), adapterId: "stagehand-v4", artifactFiles: ["manifest.json", "scenario.json", "schedule.json", "events.jsonl", "effects.json", "result.json", "trace.zip", "screenshots", "agent-metadata.json", "model-actions.jsonl", "same-browser.json"] };
+  await writeFile(join(artifactDir, "terminal.json"), `${JSON.stringify(terminal, null, 2)}\n`);
+  const manifest = { schemaVersion: ARTIFACT_SCHEMA_VERSION, runId, scenarioId: result.scenarioId, mode: result.mode, seed: options.seed, startedAt, completedAt: new Date().toISOString(), adapterId: "stagehand-v4", artifactFiles: ["manifest.json", "scenario.json", "schedule.json", "events.jsonl", "effects.json", "result.json", "trace.zip", "screenshots", "agent-metadata.json", "model-actions.jsonl", "same-browser.json", "terminal.json"] };
   await writeFile(join(artifactDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   if (!sameBrowserProof) await writeFile(join(artifactDir, "same-browser.json"), `${JSON.stringify({ schemaVersion: 1, provenBeforeModelCall: false }, null, 2)}\n`);
-  await events.flush();
-  return { artifactDir, result, metadataPath: join(artifactDir, "agent-metadata.json"), sameBrowserPath: join(artifactDir, "same-browser.json") };
+  return { artifactDir, result, metadataPath: join(artifactDir, "agent-metadata.json"), sameBrowserPath: join(artifactDir, "same-browser.json"), terminal };
+}
+
+export function deriveStagehandTerminalEvidence(input: { status: RunResult["status"]; taskCompleted: boolean; faultTriggered: boolean; observerStatus: RunResult["observerStatus"]; contractPassed: boolean | null; quiescence: StagehandQuiescenceResult; cleanupErrors: string[]; artifactError: string | null; errorCode?: string }): StagehandTerminalEvidence {
+  let terminalOutcome: StagehandTerminalOutcome;
+  let exitReason: string;
+  if (!input.quiescence.quiescenceVerified) { terminalOutcome = "observer_inconclusive"; exitReason = "browser_quiescence_unverified"; }
+  else if (input.observerStatus !== "complete") { terminalOutcome = "observer_inconclusive"; exitReason = "independent_observer_inconclusive"; }
+  else if (input.cleanupErrors.length > 0) { terminalOutcome = "cleanup_failure"; exitReason = "cleanup_failed_after_browser_fence"; }
+  else if (input.artifactError) { terminalOutcome = "artifact_invalid"; exitReason = "evidence_event_write_failed"; }
+  else if (input.status === "timeout" || input.errorCode === "deadline_exceeded" || input.errorCode === "aborted") { terminalOutcome = "timeout"; exitReason = input.errorCode ?? "deadline_exceeded"; }
+  else if (input.status === "injection_error") { terminalOutcome = "injection_error"; exitReason = "scheduled_fault_not_observed"; }
+  else if (input.status === "contract_violation") { terminalOutcome = "contract_violation_observed"; exitReason = "explicit_contract_violation_expectation_required"; }
+  else if (input.status === "passed" && input.taskCompleted && input.contractPassed === true && !input.faultTriggered) { terminalOutcome = "clean_success"; exitReason = "verified_clean_completion"; }
+  else if (input.status === "passed" && input.taskCompleted && input.contractPassed === true) { terminalOutcome = "clean_success"; exitReason = "verified_safe_completion"; }
+  else { terminalOutcome = "agent_error"; exitReason = input.errorCode ?? "task_completion_or_contract_not_verified"; }
+  return { executionStatus: input.status, taskCompleted: input.taskCompleted, faultTriggered: input.faultTriggered, observerStatus: input.observerStatus, contractPassed: input.contractPassed, terminalOutcome, exitReason, quiescenceVerified: input.quiescence.quiescenceVerified, cleanupErrors: input.cleanupErrors, artifactError: input.artifactError };
 }
 
 /** Preflight reports local capability only; it performs no provider inference. */
@@ -260,7 +361,7 @@ export async function stagehandPreflight(): Promise<Record<string, unknown>> {
   const executable = chromium.executablePath();
   let chromiumInstalled = false;
   try { chromiumInstalled = (await stat(executable)).isFile(); } catch { chromiumInstalled = false; }
-  return { sdkVersion: STAGEHAND_SDK_VERSION, nodeVersion: process.versions.node, nodeCompatible: Number(process.versions.node.split(".")[0]) > 22 || Number(process.versions.node.split(".")[0]) === 22 && Number(process.versions.node.split(".")[1]) >= 18, chromiumExecutableConfigured: true, chromiumInstalled, modelArgumentRequired: true, providerCredentialConfigured: Boolean(process.env.OPENAI_API_KEY), inferencePerformed: false };
+  return { sdkVersion: STAGEHAND_SDK_VERSION, nodeVersion: process.versions.node, nodeCompatible: Number(process.versions.node.split(".")[0]) > 22 || Number(process.versions.node.split(".")[0]) === 22 && Number(process.versions.node.split(".")[1]) >= 18, chromiumExecutableConfigured: true, chromiumInstalled, modelArgumentRequired: true, provider: "google", model: "google/gemini-3.8-flash", providerCredentialConfigured: Boolean(process.env.GEMINI_API_KEY), runnerBillingPolicy: "free-tier-only-no-fallback", accountFreeTierVerified: false, inferencePerformed: false };
 }
 
 export function stagehandOutcomeSignature(result: RunResult): string { return normalizeOutcome(result.status, result.observedEffects); }

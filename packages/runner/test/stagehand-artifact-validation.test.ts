@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { evaluateRefundAtMostOnce, type RefundEffect } from "@browserproof/contracts";
-import { APPROVED_STAGEHAND_MODELS } from "../src/stagehand-adapter.js";
+import { stagehandModelConfiguration } from "../src/stagehand-adapter.js";
 import { validateStagehandArtifacts } from "../src/stagehand-artifact-validation.js";
 import { executeStagehandSameBrowserSmoke } from "../src/stagehand-run.js";
 
@@ -46,13 +46,37 @@ async function createMockedValidatorFixture(spikeArtifactDir: string, destinatio
   await writeJson(join(destination, "schedule.json"), { schemaVersion: "1.0.0", mode: "faulted", seed: "validator-fixture", faults: [{ schemaVersion: "1.0.0", scheduleId: "stagehand-faulted-validator-fixture", type: "commit_then_response_lost", target: "POST /api/orders/A123/refund", trigger: "first_matching_request_after_agent_action", count: 1, seed: "validator-fixture" }] });
   await writeJson(join(destination, "effects.json"), { schemaVersion: "1.0.0", runId, observerStatus: "complete", effects: [effect] });
   await writeJson(join(destination, "result.json"), { schemaVersion: "1.0.0", runId, scenarioId: "supportdesk-refund-v1", mode: "faulted", status: "agent_error", taskCompleted: false, observerStatus: "complete", observedEffects: [effect], contract: evaluateRefundAtMostOnce([effect]), agent: { attempts: 1, retries: 0, observation: "mocked validator fixture" }, fault: { type: "commit_then_response_lost", armed: true, triggered: true, upstreamCommitted: true, browserReceivedSuccess: false } });
-  await writeJson(join(destination, "agent-metadata.json"), { schemaVersion: 1, adapterId: "stagehand-v4", adapterVersion: "1.0.0", mode: "model-backed-stagehand", sdkVersion: "4.3.0", provider: "openai", model: APPROVED_STAGEHAND_MODELS[0], stagehandActCalls: 1, liveInferenceCalls: 1, actionExecutions: 1, inputTokens: 12, outputTokens: 3, reasoningTokens: 0, inferenceTimeMs: 24, taskCompleted: false, errorCode: null });
-  await writeJson(join(destination, "manifest.json"), { schemaVersion: "1.0.0", runId, scenarioId: "supportdesk-refund-v1", mode: "faulted", seed: "validator-fixture", startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), adapterId: "stagehand-v4", artifactFiles: ["manifest.json", "scenario.json", "schedule.json", "events.jsonl", "effects.json", "result.json", "trace.zip", "screenshots", "agent-metadata.json", "model-actions.jsonl", "same-browser.json"] });
+  const model = "google/gemini-3.8-flash"; const modelConfig = stagehandModelConfiguration(model)!;
+  await writeJson(join(destination, "agent-metadata.json"), { schemaVersion: 1, adapterId: "stagehand-v4", adapterVersion: "1.0.0", mode: "model-backed-stagehand", sdkVersion: "4.3.0", provider: modelConfig.provider, providerModelId: modelConfig.providerModelId, model, stagehandActCalls: 1, liveInferenceCalls: 1, actionExecutions: 1, inputTokens: 12, outputTokens: 3, reasoningTokens: 0, inferenceTimeMs: 24, taskCompleted: false, errorCode: null });
+  await writeJson(join(destination, "terminal.json"), { executionStatus: "agent_error", taskCompleted: false, faultTriggered: true, observerStatus: "complete", contractPassed: true, terminalOutcome: "agent_error", exitReason: "task_completion_or_contract_not_verified", quiescenceVerified: true, cleanupErrors: [], artifactError: null });
+  await writeJson(join(destination, "manifest.json"), { schemaVersion: "1.0.0", runId, scenarioId: "supportdesk-refund-v1", mode: "faulted", seed: "validator-fixture", startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), adapterId: "stagehand-v4", artifactFiles: ["manifest.json", "scenario.json", "schedule.json", "events.jsonl", "effects.json", "result.json", "trace.zip", "screenshots", "agent-metadata.json", "model-actions.jsonl", "same-browser.json", "terminal.json"] });
 }
 
 async function mutateJson(path: string, update: (value: JsonObject) => void): Promise<void> { const value = await readJson(path); update(value); await writeJson(path, value); }
 
 describe("Stagehand artifact validation (mocked evidence fixtures only; not live-model proof)", () => {
+  it("accepts a structurally valid but untriggered failed run without treating it as success", async () => {
+    const spike = await executeStagehandSameBrowserSmoke();
+    const temp = await mkdtemp(join(tmpdir(), "browserproof-stagehand-untriggered-"));
+    const bundle = join(temp, "synthetic-untriggered-fixture");
+    await createMockedValidatorFixture(String(spike.artifactDir), bundle);
+    try {
+      const result = await readJson(join(bundle, "result.json"));
+      result.status = "injection_error"; result.taskCompleted = false; result.observedEffects = []; result.contract = evaluateRefundAtMostOnce([]);
+      result.fault.triggered = false; result.fault.upstreamCommitted = false; result.fault.browserReceivedSuccess = null;
+      await writeJson(join(bundle, "result.json"), result);
+      await writeJson(join(bundle, "effects.json"), { schemaVersion: "1.0.0", runId: result.runId, observerStatus: "complete", effects: [] });
+      await mutateJson(join(bundle, "agent-metadata.json"), (metadata) => { metadata.taskCompleted = false; metadata.errorCode = "injection_error"; });
+      await writeJson(join(bundle, "terminal.json"), { executionStatus: "injection_error", taskCompleted: false, faultTriggered: false, observerStatus: "complete", contractPassed: true, terminalOutcome: "injection_error", exitReason: "scheduled_fault_not_observed", quiescenceVerified: true, cleanupErrors: [], artifactError: null });
+      const eventPath = join(bundle, "events.jsonl");
+      const rows = (await readFile(eventPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as JsonObject)
+        .filter((event) => !["network.request", "network.upstream_response", "network.response_delivered", "network.request_failed", "backend.commit_confirmed", "fault.triggered"].includes(event.type));
+      rows.forEach((event, index) => { event.sequence = index + 1; });
+      await writeFile(eventPath, rows.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      expect(await validateStagehandArtifacts(bundle)).toEqual({ valid: true, errors: [] });
+    } finally { await rm(temp, { recursive: true, force: true }); }
+  }, 60_000);
+
   it("accepts the validator fixture, then rejects identity, missing evidence, run/effect/action, count, outcome, secret, chronology, schedule and CRC tampering", async () => {
     const spike = await executeStagehandSameBrowserSmoke();
     const temp = await mkdtemp(join(tmpdir(), "browserproof-stagehand-artifact-validator-"));
@@ -61,13 +85,14 @@ describe("Stagehand artifact validation (mocked evidence fixtures only; not live
     try {
       expect(await validateStagehandArtifacts(validBundle)).toEqual({ valid: true, errors: [] });
       const cases: Array<{ name: string; change: (path: string) => Promise<void>; secret?: string }> = [
-        { name: "adapter-model-identity", change: (path) => mutateJson(join(path, "agent-metadata.json"), (data) => { data.model = "openai/unknown"; }) },
+        { name: "adapter-model-identity", change: (path) => mutateJson(join(path, "agent-metadata.json"), (data) => { data.model = "google/unknown"; }) },
         { name: "missing-evidence", change: async (path) => { await import("node:fs/promises").then(({ unlink }) => unlink(join(path, "same-browser.json"))); } },
         { name: "wrong-run-id", change: (path) => mutateJson(join(path, "result.json"), (data) => { data.runId = "wrong-run"; }) },
         { name: "unsupported-run-mode", change: async (path) => { await mutateJson(join(path, "result.json"), (data) => { data.mode = "mystery"; data.fault.armed = false; data.fault.triggered = false; }); await mutateJson(join(path, "schedule.json"), (data) => { data.mode = "mystery"; }); const eventPath = join(path, "events.jsonl"); const rows = (await readFile(eventPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as JsonObject).filter((event) => event.type !== "fault.triggered"); rows.forEach((event, index) => { event.sequence = index + 1; }); await writeFile(eventPath, rows.map((event) => JSON.stringify(event)).join("\n") + "\n"); } },
         { name: "forged-same-browser-url", change: (path) => mutateJson(join(path, "same-browser.json"), (data) => { data.url = "http://127.0.0.1:1/forged"; }) },
         { name: "forged-target-proof-event-url", change: async (path) => { const eventPath = join(path, "events.jsonl"); const rows = (await readFile(eventPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as JsonObject); const proof = rows.find((event) => event.type === "agent.page_target_proven")!; proof.payload.url = "http://127.0.0.1:1/forged"; await writeFile(eventPath, rows.map((event) => JSON.stringify(event)).join("\n") + "\n"); } },
         { name: "tampered-result-verdict", change: (path) => mutateJson(join(path, "result.json"), (data) => { data.status = "passed"; }) },
+        { name: "tampered-terminal-outcome", change: (path) => mutateJson(join(path, "terminal.json"), (data) => { data.terminalOutcome = "clean_success"; }) },
         { name: "task-completion-disagrees-with-model-metadata", change: (path) => mutateJson(join(path, "agent-metadata.json"), (data) => { data.taskCompleted = true; }) },
         { name: "forged-provider-call-count", change: (path) => mutateJson(join(path, "agent-metadata.json"), (data) => { data.stagehandActCalls = 2; }) },
         { name: "forged-action-execution-count", change: (path) => mutateJson(join(path, "agent-metadata.json"), (data) => { data.actionExecutions = 0; }) },

@@ -4,18 +4,29 @@ import type { AgentAdapter, AgentAdapterMetadata, AgentTaskInput, AgentTaskOutco
 export const STAGEHAND_SDK_VERSION = "4.3.0";
 export const STAGEHAND_MAX_ACTIONS = 6;
 
-/** A single model ID verified in the pinned Stagehand 4.3.0 SDK bundle. */
-export const APPROVED_STAGEHAND_MODELS = ["openai/gpt-5.4-mini"] as const;
-export type ApprovedStagehandModel = (typeof APPROVED_STAGEHAND_MODELS)[number];
+/** Exact model/provider pairs supported by the pinned Stagehand v4 API shape. */
+export const STAGEHAND_MODEL_CONFIGURATIONS = [
+  { provider: "google", model: "google/gemini-3.8-flash", providerModelId: "gemini-3.8-flash", keyEnvironmentVariable: "GEMINI_API_KEY", authorization: "free-tier-only" },
+  // Kept for reading/validating legacy Prompt 12 artifacts. Prompt 12B never invokes it.
+  { provider: "openai", model: "openai/gpt-5.4-mini", providerModelId: "gpt-5.4-mini", keyEnvironmentVariable: "OPENAI_API_KEY", authorization: "legacy-paid" },
+] as const;
+export const APPROVED_STAGEHAND_MODELS = ["google/gemini-3.8-flash", "openai/gpt-5.4-mini"] as const;
+export type ApprovedStagehandModel = (typeof STAGEHAND_MODEL_CONFIGURATIONS)[number]["model"];
+export type StagehandProvider = (typeof STAGEHAND_MODEL_CONFIGURATIONS)[number]["provider"];
+export type StagehandModelConfiguration = (typeof STAGEHAND_MODEL_CONFIGURATIONS)[number];
+
+export function stagehandModelConfiguration(model: string): StagehandModelConfiguration | undefined {
+  return STAGEHAND_MODEL_CONFIGURATIONS.find((configuration) => configuration.model === model);
+}
 
 export interface StagehandSpendConfiguration {
   model: string;
-  allowModelSpend: boolean;
+  allowFreeTierGemini: boolean;
   providerApiKey?: string;
 }
 
 export class StagehandConfigurationError extends Error {
-  constructor(readonly code: "spend_opt_in_required" | "unsupported_model" | "provider_key_missing") {
+  constructor(readonly code: "free_tier_opt_in_required" | "unsupported_model" | "provider_key_missing" | "provider_not_enabled") {
     super(code);
     this.name = "StagehandConfigurationError";
   }
@@ -23,8 +34,10 @@ export class StagehandConfigurationError extends Error {
 
 /** Validate opt-in before any browser/model SDK setup; never returns or logs the credential. */
 export function validateStagehandSpendConfiguration(configuration: StagehandSpendConfiguration): void {
-  if (configuration.allowModelSpend !== true) throw new StagehandConfigurationError("spend_opt_in_required");
-  if (!APPROVED_STAGEHAND_MODELS.some((model) => model === configuration.model)) throw new StagehandConfigurationError("unsupported_model");
+  const model = stagehandModelConfiguration(configuration.model);
+  if (!model) throw new StagehandConfigurationError("unsupported_model");
+  if (model.provider !== "google" || model.authorization !== "free-tier-only") throw new StagehandConfigurationError("provider_not_enabled");
+  if (configuration.allowFreeTierGemini !== true) throw new StagehandConfigurationError("free_tier_opt_in_required");
   if (typeof configuration.providerApiKey !== "string" || configuration.providerApiKey.trim().length === 0) {
     throw new StagehandConfigurationError("provider_key_missing");
   }
@@ -38,6 +51,7 @@ export interface StagehandProviderMetrics {
   outputTokens: number;
   reasoningTokens: number;
   inferenceTimeMs: number;
+  lateResultsDiscarded: number;
 }
 
 export interface StagehandV4AdapterOptions {
@@ -99,7 +113,7 @@ function parseActResult(raw: unknown): ActResult {
   return raw as unknown as ActResult;
 }
 
-function resultMetrics(result: ActResult): Omit<StagehandProviderMetrics, "stagehandActCalls" | "liveInferenceCalls" | "actionExecutions"> {
+function resultMetrics(result: ActResult): Omit<StagehandProviderMetrics, "stagehandActCalls" | "liveInferenceCalls" | "actionExecutions" | "lateResultsDiscarded"> {
   const usage = result.metadata.usage;
   return {
     inputTokens: usage.inputTokens,
@@ -113,7 +127,7 @@ function remainingMs(input: AgentTaskInput): number {
   return Math.floor(input.deadlineAtMs - Date.now());
 }
 
-async function executeWithDeadline<T>(promise: Promise<T>, input: AgentTaskInput, timeoutMs: number): Promise<T> {
+async function executeWithDeadline<T>(promise: Promise<T>, input: AgentTaskInput, timeoutMs: number, onLateResult: () => void): Promise<T> {
   if (input.signal.aborted) throw new StagehandAdapterFailure("aborted");
   if (timeoutMs <= 0) throw new StagehandAdapterFailure("deadline_exceeded");
   return await new Promise<T>((resolve, reject) => {
@@ -128,7 +142,13 @@ async function executeWithDeadline<T>(promise: Promise<T>, input: AgentTaskInput
     const onAbort = () => finish(() => reject(new StagehandAdapterFailure("aborted")));
     const timer = setTimeout(() => finish(() => reject(new StagehandAdapterFailure("deadline_exceeded"))), timeoutMs);
     input.signal.addEventListener("abort", onAbort, { once: true });
-    promise.then((value) => finish(() => resolve(value)), () => finish(() => reject(new StagehandAdapterFailure("provider_error"))));
+    promise.then((value) => {
+      if (settled) { onLateResult(); return; }
+      finish(() => resolve(value));
+    }, () => {
+      if (settled) { onLateResult(); return; }
+      finish(() => reject(new StagehandAdapterFailure("provider_error")));
+    });
   });
 }
 
@@ -143,6 +163,7 @@ export class StagehandV4AgentAdapter implements AgentAdapter {
     outputTokens: 0,
     reasoningTokens: 0,
     inferenceTimeMs: 0,
+    lateResultsDiscarded: 0,
   };
   private readonly usedActionIds = new Set<string>();
 
@@ -152,7 +173,7 @@ export class StagehandV4AgentAdapter implements AgentAdapter {
       adapterVersion: "1.0.0",
       mode: "model-backed-stagehand",
       sdkVersion: STAGEHAND_SDK_VERSION,
-      provider: "openai",
+      provider: stagehandModelConfiguration(options.model)?.provider ?? "unknown",
       model: options.model,
     };
   }
@@ -189,7 +210,7 @@ export class StagehandV4AgentAdapter implements AgentAdapter {
         try {
           const timeout = Math.max(1, Math.min(15_000, remaining));
           const pending = this.options.stagehand.act(input.task, { page: input.stagehandPage, timeout });
-          result = parseActResult(await executeWithDeadline(pending, input, timeout));
+          result = parseActResult(await executeWithDeadline(pending, input, timeout, () => { metrics.lateResultsDiscarded += 1; }));
         } catch (error) {
           if (error instanceof StagehandAdapterFailure) throw error;
           throw new StagehandAdapterFailure("provider_error");
@@ -221,7 +242,7 @@ export class StagehandV4AgentAdapter implements AgentAdapter {
         observation = result.data.success
           ? "Stagehand reported its UI operation completed; completion is still checked in the visible application"
           : "Stagehand reported no completed UI operation";
-        taskCompleted = await executeWithDeadline(input.confirmTaskCompleted(), input, Math.max(1, remainingMs(input)));
+        taskCompleted = await executeWithDeadline(input.confirmTaskCompleted(), input, Math.max(1, remainingMs(input)), () => { metrics.lateResultsDiscarded += 1; });
         if (taskCompleted) {
           observation = "Controlled application showed task completion in the visible UI";
           return { attempts, retries: Math.max(0, attempts - 1), observation, taskCompleted: true };

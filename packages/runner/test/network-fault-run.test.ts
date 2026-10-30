@@ -59,7 +59,10 @@ describe("real Chromium network fault runs", () => {
       const validTraceResult = await validateNetworkFaultArtifacts(artifactDir);
       expect(validTraceResult.valid).toBe(true);
       const damagedTrace = Buffer.from(validTrace);
-      damagedTrace[Math.floor(damagedTrace.length / 2)] = damagedTrace[Math.floor(damagedTrace.length / 2)]! ^ 0xff;
+      const centralDirectoryEntry = damagedTrace.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+      expect(centralDirectoryEntry).toBeGreaterThanOrEqual(0);
+      // Corrupt the first central-directory CRC field deterministically rather than an arbitrary byte.
+      damagedTrace[centralDirectoryEntry + 16] = damagedTrace[centralDirectoryEntry + 16]! ^ 0xff;
       await writeFile(tracePath, damagedTrace);
       expect((await stat(tracePath)).size).toBe(validTrace.length);
       const corruptTrace = await validateNetworkFaultArtifacts(artifactDir);

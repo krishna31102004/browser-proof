@@ -1,45 +1,64 @@
-# Stagehand v4 AgentAdapter
+# Stagehand v4 Gemini AgentAdapter
 
-## Status
+## Scope and evidence labels
 
-Prompt 12 implemented the Stagehand v4 adapter and an offline, real Chromium same-browser smoke. The model-backed SupportDesk refund campaign is **NOT RUN**: no provider credential was configured, and no model spend was authorized for this work. The offline smoke is transport/interception evidence only; it is not live-model proof. BrowserProof's frozen benchmark remains **0/36 NOT EXECUTED** and detection rate remains **UNMEASURED**.
+BrowserProof's model-backed adapter is a local Stagehand v4 runner for the synthetic SupportDesk A123 refund workflow. The approved live configuration for Prompt 12B is **Google Gemini 3.8 Flash**, Stagehand model name `google/gemini-3.8-flash`, provider model ID `gemini-3.8-flash`, and `GEMINI_API_KEY`. The pinned SDK is `@browserbasehq/stagehand` 4.3.0. Legacy OpenAI model identity remains readable in the typed provider registry for compatibility, but every live CLI path in this milestone rejects it before browser startup. There is no model fallback or Browserbase Model Gateway.
 
-## Version and browser architecture
+Keep these kinds of evidence distinct:
 
-The runner pins `@browserbasehq/stagehand` **4.3.0**. It uses the v4 `localBrowser.launch()` API to start a temporary local Chromium profile, creates a Stagehand client, and attaches Playwright through that browser's local CDP port. The runner compares the Stagehand page ID with Playwright's `Target.getTargetInfo` target ID and compares both page URLs before making a model call. Playwright installs request interception and tracing on the same attached browser context. Closing Playwright disconnects the attachment; Stagehand and its owned browser are closed separately, then the temporary profile is removed.
+- `pnpm bp stagehand spike` is a real local Chromium/CDP/Playwright transport and fault-injection smoke. It uses a deterministic Stagehand Page click and reports zero model inference.
+- Vitest adapter tests use mocked `act()` responses and validate plumbing, timeouts, provider errors, malformed responses, credential isolation, and exit policy. They are not live-model proof.
+- A valid live artifact requires Gemini identity, non-cache provider usage telemetry, task-relevant model-directed browser actions, target proof before inference, complete independent backend observation, and inspectable screenshots/trace. The CLI's `artifactValid` reports structural validity separately from `executionStatus`, `taskCompleted`, `contractPassed`, and `terminalOutcome`.
+- A campaign records actual outcomes and denominators. A safe refusal, failed task, missing trigger, incomplete observer, or invalid artifact is data, not a passing result. No detection-rate percentage is computed.
 
-The no-inference spike is reproducible with `pnpm bp stagehand spike`. It uses one deterministic Stagehand `Page.locator(...).click()` only to test transport. The real request is intercepted by Playwright, forwarded upstream, independently queried from the SupportDesk effect ledger, and then aborted before browser delivery. It also rejects a different Chromium target in a negative control, checks the trace ZIP and screenshots, and verifies browser/profile cleanup. Its artifact mode is explicitly `same-browser-spike`, `modelInvoked=false`, and `liveInferenceCalls=0`.
+The frozen benchmark remains **0/36 not executed**, and detection rate remains **unmeasured**. The public Evidence Journal is unchanged. No real payment system is contacted.
 
-The v4 API choices follow the [Stagehand v4 browser configuration](https://github.com/browserbase/stagehand/blob/main/packages/docs/v4/configuration/browser.mdx), [model configuration](https://github.com/browserbase/stagehand/blob/main/packages/docs/v4/configuration/models.mdx), and [first steps](https://github.com/browserbase/stagehand/blob/main/packages/docs/v4/first-steps/introduction.mdx). Local model inference requires an explicitly configured provider API key; the Stagehand package and a logged-in ChatGPT account do not provide free API inference. Browserbase Model Gateway is not used by this local-browser adapter.
+## Browser identity and fault isolation
 
-## Safe, opt-in model commands
+The runner uses Stagehand v4 `localBrowser.launch()` to start a temporary local Chromium profile, then attaches Playwright to the same browser through its local CDP port. Before any model action it checks that Stagehand's page ID equals Playwright's CDP target ID and that both page URLs match. Playwright owns tracing and context-wide routing in that same browser context. The browser is isolated from the `/__browserproof/` control plane and every external origin. The backend ledger remains inaccessible to the model.
 
-Preflight performs no inference and does not print credentials:
+The user/model receives the synthetic UI task and visible browser only. The saved schedule, mode, expected effect, control URL, ledger results, and observer are not part of the agent task input. A scheduled response loss is triggered only after an actual UI-originated refund request commits and an independent ledger query confirms that commit; Playwright then aborts the response before browser delivery. The runner never issues a business mutation directly.
+
+## Deadline and terminal behavior
+
+Stagehand 4.3.0's `act()` does not expose a cancellation signal. A timeout or abort abandons the provider promise; it does **not** prove remote inference stopped or prevent billing for that request. The runner terminates its owned local browser, checks that the CDP port is closed, drains in-flight routes and tracked event writes, and only then queries the controlled backend ledger. If the browser fence or route drain cannot be proven, the result is `observer_inconclusive`, never success. Late provider results are consumed and discarded; their action results and usage are not counted as accepted telemetry. Cleanup errors are separately recorded and force a nonzero outcome even when the observer already obtained its final snapshot.
+
+The default overall deadline is 45 seconds and each run is bounded to at most six `Stagehand.act()` invocations. The pinned SDK does not provide a pre-execution limit on the number of UI operations one `act()` response may contain. BrowserProof counts the returned operations and rejects a run if their total exceeds the configured budget; this check is post hoc and does not claim to preempt operations already performed by the SDK.
+
+Single-run CLI exit zero means either a verified clean success or a faulted contract violation explicitly asserted by `--expect-contract-violation`. An observed violation without that explicit assertion is classified `expected_violation_observed` in JSON but exits nonzero. Other task errors, timeouts, injection errors, cleanup failures, observer uncertainty, and invalid artifacts exit nonzero. Machine output includes `artifactValid`, `executionStatus`, `taskCompleted`, `faultTriggered`, `observerStatus`, nullable `contractPassed`, `terminalOutcome`, and `exitReason`.
+
+## Free-tier command flow
+
+`preflight` checks only local prerequisites and whether the process environment contains the key. It never calls a model and never prints secret material. The explicit `--allow-free-tier-gemini` flag is mandatory. The key is passed by the local runner to Stagehand's model config as `apiKey`; it is not placed in task inputs, events, artifacts, URLs, shell arguments, or CI.
 
 ```bash
 pnpm bp stagehand preflight
 pnpm bp stagehand spike
+pnpm bp run --scenario supportdesk-refund-v1 --adapter stagehand-v4 --mode clean --seed gemini-clean-pilot --model google/gemini-3.8-flash --allow-free-tier-gemini
 ```
 
-The preflight reports Node/Chromium readiness and whether `OPENAI_API_KEY` is present. The live command requires an explicit supported model argument, configured provider key, and `--allow-model-spend`; without all three it exits before browser/model setup. The key is read only from the local process environment and is never written to evidence:
+Inspect the pilot's terminal JSON, `agent-metadata.json`, `model-actions.jsonl`, `same-browser.json`, `events.jsonl`, independent `effects.json`, screenshots, and `trace.zip`. Only a valid clean task success with actual non-cache Gemini usage can be provided to the bounded acceptance campaign. It counts as run one:
 
 ```bash
-pnpm bp run --scenario supportdesk-refund-v1 --adapter stagehand-v4 --mode clean --seed sh12-clean-01 --model openai/gpt-5.4-mini --allow-model-spend
-pnpm bp run --scenario supportdesk-refund-v1 --adapter stagehand-v4 --mode faulted --seed sh12-fault-01 --model openai/gpt-5.4-mini --allow-model-spend
-pnpm bp repro artifacts/<live-faulted-run-id> --times 3 --adapter stagehand-v4 --model openai/gpt-5.4-mini --allow-model-spend
-pnpm bp verify --scenario stagehand-smoke --allow-model-spend --max-model-runs 9 --model openai/gpt-5.4-mini
+pnpm bp verify --scenario stagehand-smoke --allow-free-tier-gemini --max-model-runs 9 --model google/gemini-3.8-flash --pilot-artifact artifacts/<clean-pilot-run-id>
 ```
 
-The nine-run campaign requires 3 clean, 3 faulted, and 3 fresh-browser saved-schedule replays. Every run is limited to six Stagehand `act()` calls and a 45-second default deadline. It does not force retries or a violation: actual browser-visible task completion and independent ledger effects determine each result. Stagehand 4.3.0's `act()` API does not expose a pre-execution cap for the number of UI operations returned by one natural-language call. BrowserProof therefore treats each bounded `act()` invocation as one model action and additionally rejects a run if the SDK reports more than six executed UI operations in total; that second check occurs after `act()` returns and must not be described as preempting those operations. A valid live model artifact requires SDK-reported non-cache provider usage, a task-relevant Stagehand action, same-target proof, a real Playwright trace, and complete backend evidence. It records provider/token/timing values exposed by Stagehand; it does not estimate provider cost.
+The campaign uses that pilot plus at most two additional clean runs, three faulted runs, and three fresh saved-schedule reproductions. Maximum total: nine runs and 54 `act()` invocations. The pilot must be inspected before continuing. A failed, throttled, unauthenticated, unsupported, quota-exhausted, or billing-required request stops the campaign; do not enable billing, retry the provider outside the bound, change models, or route through a paid gateway. Google states that Gemini API Free Tier usage is free of charge for eligible models, but quota/project availability are account-specific and must not be inferred from the local SDK. No billing status or charge amount is fabricated from missing usage data.
 
-For local use, configure a provider API key in the process environment without pasting it into a command, source file, browser page, or chat. The supported model is selected through `--model`; this release allowlists only `openai/gpt-5.4-mini`. Provider support/availability and cost are account-specific and were not tested here. Do not run a live command without the user's explicit spend authorization.
+Official references: [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing), [Gemini 3.8 Flash model](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash), [Stagehand v4 model configuration](https://github.com/browserbase/stagehand/blob/main/packages/docs/v4/configuration/models.mdx).
 
-## Evidence and isolation
+## Artifact validation and regressions
 
-Legacy schema `1.0.0` artifacts remain unchanged. Live Stagehand runs add `agent-metadata.json`, `model-actions.jsonl`, and `same-browser.json`. The validator cross-checks adapter/SDK/model identity, run identity, provider-action counts, sanitized event rows, same-target proof before the first model action, saved schedule, request/action/effect links, commit-before-response-loss chronology, contract signature, PNG headers, and ZIP CRC. It rejects altered schedules, target/effect links, missing evidence, inconsistent provider counts, credential canaries supplied by the runner, and corrupt traces.
+Schema `1.0.0` is retained. A model run adds `agent-metadata.json`, `model-actions.jsonl`, `same-browser.json`, and `terminal.json`. Validation checks exact provider/model/SDK mapping, run/schedule identity, action and call counts, event order, effect/action/request correlation, contract values, same-target proof, screenshot signatures, ZIP integrity, terminal classification, and optional credential canaries. Structural validity does not imply task success or expected behavior.
 
-The Stagehand adapter receives only the task, the Playwright/Stagehand page pair, action/deadline budget, abort signal, UI completion check, and agent-lane event emitter. It does not receive mode, schedule, control URL, ledger, expected effects, or a hidden correct action. The runner blocks browser requests to external origins and the `/__browserproof/` control plane, cancels downloads, and keeps provider credentials in the runner process only. It does not provide shell or filesystem tools to the agent.
+No-key verification commands remain safe in CI:
 
-## Prompt 12 observed limitation
+```bash
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+pnpm bp stagehand preflight
+pnpm bp stagehand spike
+```
 
-The no-LLM same-browser smoke and mocked adapter-plumbing tests passed locally. The live provider campaign, live clean/fault/replay run IDs, and provider-backed action metadata remain **BLOCKED** until explicit user authorization for model spend and a provider key configured in the local environment. Mocked tests validate plumbing only and do not satisfy model-backed acceptance.
+CI never receives `GEMINI_API_KEY` and never runs provider inference. The same-browser spike and mocked tests prove only the local execution/integration boundary; live Gemini claims require local provider telemetry and real independently observed browser/backend evidence.

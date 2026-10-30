@@ -7,7 +7,7 @@ import {
   type AgentTaskInput,
 } from "../src/agent-adapter.js";
 import {
-  APPROVED_STAGEHAND_MODELS,
+  STAGEHAND_MODEL_CONFIGURATIONS,
   StagehandAdapterFailure,
   StagehandConfigurationError,
   StagehandV4AgentAdapter,
@@ -16,7 +16,7 @@ import {
 } from "../src/stagehand-adapter.js";
 
 // These tests verify mocked adapter plumbing only. They do not call a provider or prove live model behavior.
-const MOCK_KEY = "sk-browserproof-test-key-not-for-provider";
+const MOCK_KEY = "browserproof-test-key-not-for-provider";
 
 function actResult(overrides: Record<string, unknown> = {}): unknown {
   return {
@@ -55,7 +55,7 @@ function setup(options: {
   const adapter = new StagehandV4AgentAdapter({
     stagehand,
     page: stagehandPage,
-    model: APPROVED_STAGEHAND_MODELS[0],
+    model: "google/gemini-3.8-flash",
   });
   const emitted: Array<{ event: string; payload: Record<string, unknown>; actionId?: string }> = [];
   const ids = options.ids ?? ["agent-action-1", "agent-action-2", "agent-action-3", "agent-action-4", "agent-action-5", "agent-action-6"];
@@ -78,16 +78,19 @@ function setup(options: {
 }
 
 describe("Stagehand v4 adapter mocked plumbing (not live provider proof)", () => {
-  it("requires explicit spend opt-in, an allowlisted model, and a provider key without exposing it", () => {
-    expect(() => validateStagehandSpendConfiguration({ model: APPROVED_STAGEHAND_MODELS[0], allowModelSpend: false, providerApiKey: MOCK_KEY }))
-      .toThrowError(new StagehandConfigurationError("spend_opt_in_required"));
-    expect(() => validateStagehandSpendConfiguration({ model: APPROVED_STAGEHAND_MODELS[0], allowModelSpend: true }))
+  it("maps the exact Gemini provider/key and requires explicit free-tier authorization without exposing credentials", () => {
+    expect(STAGEHAND_MODEL_CONFIGURATIONS[0]).toEqual({ provider: "google", model: "google/gemini-3.8-flash", providerModelId: "gemini-3.8-flash", keyEnvironmentVariable: "GEMINI_API_KEY", authorization: "free-tier-only" });
+    expect(() => validateStagehandSpendConfiguration({ model: "google/gemini-3.8-flash", allowFreeTierGemini: false, providerApiKey: MOCK_KEY }))
+      .toThrowError(new StagehandConfigurationError("free_tier_opt_in_required"));
+    expect(() => validateStagehandSpendConfiguration({ model: "google/gemini-3.8-flash", allowFreeTierGemini: true }))
       .toThrowError(new StagehandConfigurationError("provider_key_missing"));
-    expect(() => validateStagehandSpendConfiguration({ model: "openai/not-approved", allowModelSpend: true, providerApiKey: MOCK_KEY }))
+    expect(() => validateStagehandSpendConfiguration({ model: "google/not-approved", allowFreeTierGemini: true, providerApiKey: MOCK_KEY }))
       .toThrowError(new StagehandConfigurationError("unsupported_model"));
-    expect(() => validateStagehandSpendConfiguration({ model: APPROVED_STAGEHAND_MODELS[0], allowModelSpend: true, providerApiKey: MOCK_KEY })).not.toThrow();
+    expect(() => validateStagehandSpendConfiguration({ model: "openai/gpt-5.4-mini", allowFreeTierGemini: true, providerApiKey: MOCK_KEY }))
+      .toThrowError(new StagehandConfigurationError("provider_not_enabled"));
+    expect(() => validateStagehandSpendConfiguration({ model: "google/gemini-3.8-flash", allowFreeTierGemini: true, providerApiKey: MOCK_KEY })).not.toThrow();
     try {
-      validateStagehandSpendConfiguration({ model: APPROVED_STAGEHAND_MODELS[0], allowModelSpend: false, providerApiKey: MOCK_KEY });
+      validateStagehandSpendConfiguration({ model: "google/gemini-3.8-flash", allowFreeTierGemini: false, providerApiKey: MOCK_KEY });
     } catch (error) {
       expect(String(error)).not.toContain(MOCK_KEY);
     }
@@ -114,6 +117,7 @@ describe("Stagehand v4 adapter mocked plumbing (not live provider proof)", () =>
     expect(emitted.map((item) => item.actionId)).toEqual(["agent-action-1", "agent-action-1"]);
     expect(JSON.stringify(emitted)).not.toContain(MOCK_KEY);
     expect(adapter.metrics).toMatchObject({ stagehandActCalls: 1, liveInferenceCalls: 1, actionExecutions: 1, inputTokens: 12, outputTokens: 3 });
+    expect(adapter.metadata).toMatchObject({ provider: "google", model: "google/gemini-3.8-flash" });
   });
 
   it("sanitizes credential-like text, URLs, and control characters", () => {
@@ -155,6 +159,63 @@ describe("Stagehand v4 adapter mocked plumbing (not live provider proof)", () =>
 
     const timedOut = setup({ act: () => new Promise(() => undefined), deadlineOffsetMs: 25 });
     expect((await timedOut.adapter.runTask(timedOut.input)).errorCode).toBe("deadline_exceeded");
+  });
+
+  it("discards late deferred act results after timeout and never accepts their telemetry", async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: (value: unknown) => void;
+      const pending = new Promise<unknown>((resolve) => { release = resolve; });
+      const setupResult = setup({ act: () => pending, deadlineOffsetMs: 40, maxActions: 1 });
+      const running = setupResult.adapter.runTask(setupResult.input);
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(50);
+      const outcome = await running;
+      expect(outcome.errorCode).toBe("deadline_exceeded");
+      expect(setupResult.emitted.map(({ event }) => event)).toContain("agent.error");
+      expect(setupResult.emitted.map(({ event }) => event)).not.toContain("agent.model_action_result");
+      release(actResult());
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(setupResult.emitted.map(({ event }) => event)).not.toContain("agent.model_action_result");
+      expect(setupResult.adapter.metrics).toMatchObject({ actionExecutions: 0, inputTokens: 0, liveInferenceCalls: 0, lateResultsDiscarded: 1 });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("retains a real completion that is observed just before the operation deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: (value: unknown) => void;
+      const pending = new Promise<unknown>((resolve) => { release = resolve; });
+      const setupResult = setup({ act: () => pending, deadlineOffsetMs: 50, confirm: async () => true, maxActions: 1 });
+      const running = setupResult.adapter.runTask(setupResult.input);
+      await Promise.resolve(); await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(49);
+      release(actResult());
+      const outcome = await running;
+      expect(outcome.taskCompleted).toBe(true);
+      expect(outcome.errorCode).toBeUndefined();
+      expect(setupResult.adapter.metrics.lateResultsDiscarded).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("abandons an in-flight provider result after abort and discards its late result", async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: (value: unknown) => void;
+      const pending = new Promise<unknown>((resolve) => { release = resolve; });
+      const controller = new AbortController();
+      const setupResult = setup({ act: () => pending, deadlineOffsetMs: 5_000, maxActions: 1, signal: controller.signal });
+      const running = setupResult.adapter.runTask(setupResult.input);
+      await Promise.resolve(); await Promise.resolve();
+      controller.abort();
+      const outcome = await running;
+      expect(outcome.errorCode).toBe("aborted");
+      release(actResult()); await Promise.resolve(); await Promise.resolve();
+      expect(setupResult.adapter.metrics.lateResultsDiscarded).toBe(1);
+      expect(setupResult.emitted.map(({ event }) => event)).not.toContain("agent.model_action_result");
+    } finally { vi.useRealTimers(); }
   });
 
   it("enforces the six-action ceiling and executes no model action for an invalid budget", async () => {

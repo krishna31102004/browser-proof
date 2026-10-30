@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { evaluateRefundAtMostOnce, FAULT_SCHEDULE_REGISTRY } from "@browserproof/contracts";
-import { APPROVED_STAGEHAND_MODELS, STAGEHAND_MAX_ACTIONS } from "./stagehand-adapter.js";
+import { STAGEHAND_MAX_ACTIONS, stagehandModelConfiguration } from "./stagehand-adapter.js";
 
 type ObjectValue = Record<string, unknown>;
 function isRecord(value: unknown): value is ObjectValue { return typeof value === "object" && value !== null && !Array.isArray(value); }
@@ -31,22 +31,34 @@ export function validateStagehandSavedSchedule(value: unknown, expectedSeed?: st
 export async function validateStagehandArtifacts(artifactDir: string, forbiddenSecrets: readonly string[] = []): Promise<StagehandArtifactValidation> {
   const errors: string[] = [];
   try {
-    const [manifest, scenario, schedule, result, effects, metadata, proof, eventText, actionText, trace, before, boundary, after] = await Promise.all([
+    const [manifest, scenario, schedule, result, effects, metadata, proof, terminal, eventText, actionText, trace, before, boundary, after] = await Promise.all([
       readObject(resolve(artifactDir, "manifest.json")), readObject(resolve(artifactDir, "scenario.json")), readObject(resolve(artifactDir, "schedule.json")),
       readObject(resolve(artifactDir, "result.json")), readObject(resolve(artifactDir, "effects.json")), readObject(resolve(artifactDir, "agent-metadata.json")),
-      readObject(resolve(artifactDir, "same-browser.json")), readFile(resolve(artifactDir, "events.jsonl"), "utf8"), readFile(resolve(artifactDir, "model-actions.jsonl"), "utf8"),
+      readObject(resolve(artifactDir, "same-browser.json")), readObject(resolve(artifactDir, "terminal.json")), readFile(resolve(artifactDir, "events.jsonl"), "utf8"), readFile(resolve(artifactDir, "model-actions.jsonl"), "utf8"),
       readFile(resolve(artifactDir, "trace.zip")), readFile(resolve(artifactDir, "screenshots/before-agent.png")), readFile(resolve(artifactDir, "screenshots/at-boundary.png")), readFile(resolve(artifactDir, "screenshots/after-agent.png")),
     ]);
     const runId = result.runId;
     if (typeof runId !== "string" || manifest.runId !== runId || effects.runId !== runId) errors.push("run ID does not match across required artifacts");
     if (result.mode !== "clean" && result.mode !== "faulted") errors.push("result has an unsupported run mode");
     if (manifest.mode !== result.mode || manifest.scenarioId !== result.scenarioId || result.scenarioId !== "supportdesk-refund-v1") errors.push("manifest and result identity fields disagree");
-    if (manifest.adapterId !== "stagehand-v4" || metadata.adapterId !== "stagehand-v4" || metadata.mode !== "model-backed-stagehand" || metadata.sdkVersion !== "4.3.0" || metadata.provider !== "openai" || !APPROVED_STAGEHAND_MODELS.includes(metadata.model as (typeof APPROVED_STAGEHAND_MODELS)[number])) errors.push("Stagehand adapter/provider/model identity mismatch");
+    const modelConfiguration = stagehandModelConfiguration(String(metadata.model));
+    if (manifest.adapterId !== "stagehand-v4" || metadata.adapterId !== "stagehand-v4" || metadata.mode !== "model-backed-stagehand" || metadata.sdkVersion !== "4.3.0" || !modelConfiguration || metadata.provider !== modelConfiguration.provider || metadata.providerModelId !== modelConfiguration.providerModelId) errors.push("Stagehand adapter/provider/model identity mismatch");
+    if (metadata.provider !== "google" || metadata.model !== "google/gemini-3.8-flash") errors.push("Prompt 12B evidence must use the authorized Gemini model");
     if (scenario.scenarioId !== "supportdesk-refund-v1" || scenario.orderId !== "A123" || schedule.mode !== result.mode || schedule.seed !== manifest.seed) errors.push("scenario or schedule identity mismatch");
     if (result.mode === "faulted" && !validateStagehandSavedSchedule(schedule, typeof manifest.seed === "string" ? manifest.seed : undefined)) errors.push("faulted saved schedule is invalid or mismatched");
     if (result.mode === "clean" && (!keysAre(schedule, ["schemaVersion", "mode", "seed", "faults"]) || schedule.schemaVersion !== "1.0.0" || !Array.isArray(schedule.faults) || schedule.faults.length !== 0)) errors.push("clean run must not include an active fault schedule or unknown schedule fields");
     const artifactFiles = manifest.artifactFiles;
-    if (!Array.isArray(artifactFiles) || !["agent-metadata.json", "model-actions.jsonl", "same-browser.json"].every((name) => artifactFiles.includes(name))) errors.push("manifest omits a Stagehand extension artifact");
+    if (!Array.isArray(artifactFiles) || !["agent-metadata.json", "model-actions.jsonl", "same-browser.json", "terminal.json"].every((name) => artifactFiles.includes(name))) errors.push("manifest omits a Stagehand extension artifact");
+    if (terminal.executionStatus !== result.status || terminal.taskCompleted !== result.taskCompleted || terminal.faultTriggered !== (result.fault as ObjectValue | undefined)?.triggered || terminal.observerStatus !== result.observerStatus || terminal.contractPassed !== ((result.contract as ObjectValue | null)?.passed ?? null) || typeof terminal.terminalOutcome !== "string" || typeof terminal.exitReason !== "string" || typeof terminal.quiescenceVerified !== "boolean" || !Array.isArray(terminal.cleanupErrors) || (terminal.artifactError !== null && typeof terminal.artifactError !== "string")) errors.push("terminal evidence fields disagree with the execution result");
+    const expectedTerminal = terminal.quiescenceVerified !== true || result.observerStatus !== "complete" ? "observer_inconclusive"
+      : Array.isArray(terminal.cleanupErrors) && terminal.cleanupErrors.length > 0 ? "cleanup_failure"
+        : typeof terminal.artifactError === "string" ? "artifact_invalid"
+        : result.status === "timeout" ? "timeout"
+          : result.status === "injection_error" ? "injection_error"
+            : result.status === "contract_violation" ? "contract_violation_observed"
+              : result.status === "passed" && result.taskCompleted === true && (result.contract as ObjectValue | null)?.passed === true ? "clean_success"
+                : "agent_error";
+    if (terminal.terminalOutcome !== expectedTerminal || (expectedTerminal === "clean_success" && terminal.exitReason !== "verified_clean_completion" && terminal.exitReason !== "verified_safe_completion")) errors.push("terminal classification is not justified by the independently observed execution outcome");
     const targetSame = proof.provenBeforeModelCall === true && proof.stagehandPageId === proof.playwrightTargetId && sameUrl(proof.stagehandUrl, proof.playwrightUrl) && sameUrl(proof.url, proof.stagehandUrl) && proof.controlPlaneBlocked === true && proof.externalOriginBlocked === true && typeof proof.url === "string" && proof.url.startsWith("http://127.0.0.1:");
     if (!targetSame) errors.push("same-browser proof is missing or mismatched");
     if (!Array.isArray(effects.effects)) errors.push("independent effects ledger is malformed");
@@ -59,10 +71,10 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
     const actionRows = actionText.trim() ? actionText.trim().split("\n").map((line) => JSON.parse(line) as { actionId?: string; payload?: ObjectValue }) : [];
     const resultRows = events.filter((event) => event.type === "agent.model_action_result");
     const proposalRows = events.filter((event) => event.type === "agent.action_proposed");
-    if (Number(metadata.stagehandActCalls) !== proposalRows.length || Number(metadata.stagehandActCalls) !== resultRows.length || Number(metadata.stagehandActCalls) > STAGEHAND_MAX_ACTIONS || Number(metadata.liveInferenceCalls) < 1 || Number(metadata.liveInferenceCalls) > Number(metadata.stagehandActCalls) || actionRows.length !== resultRows.length) errors.push("provider call/action evidence counts are inconsistent, exceed the six-act budget, or lack live inference");
+    if (Number(metadata.stagehandActCalls) !== proposalRows.length || Number(metadata.stagehandActCalls) !== resultRows.length || Number(metadata.stagehandActCalls) > STAGEHAND_MAX_ACTIONS || Number(metadata.liveInferenceCalls) < 0 || Number(metadata.liveInferenceCalls) > Number(metadata.stagehandActCalls) || actionRows.length !== resultRows.length) errors.push("provider call/action evidence counts are inconsistent or exceed the six-act budget");
     if (actionRows.some((row, index) => row.actionId !== resultRows[index]?.actionId || JSON.stringify(row.payload) !== JSON.stringify(resultRows[index]?.payload))) errors.push("model-actions rows differ from ordered event evidence");
     const returnedActions = actionRows.flatMap((row) => Array.isArray(row.payload?.actions) ? row.payload.actions as ObjectValue[] : []);
-    if (returnedActions.length < 1 || returnedActions.length > STAGEHAND_MAX_ACTIONS || Number(metadata.actionExecutions) !== returnedActions.length || returnedActions.some((action) => typeof action.selector !== "string" || !action.selector || typeof action.targetDescription !== "string" || !/(refund|order)/i.test(action.targetDescription))) errors.push("no executed task-relevant Stagehand action is evidenced, action counts disagree, or the six-action ceiling was exceeded");
+    if (returnedActions.length > STAGEHAND_MAX_ACTIONS || Number(metadata.actionExecutions) !== returnedActions.length || returnedActions.some((action) => typeof action.selector !== "string" || !action.selector || typeof action.targetDescription !== "string" || !/(refund|order)/i.test(action.targetDescription))) errors.push("returned Stagehand actions are malformed, action counts disagree, or the six-action ceiling was exceeded");
     if (Array.isArray(result.observedEffects) && (result.observedEffects as ObjectValue[]).some((effect) => !actionRows.some((row) => row.actionId === effect.actionId && Array.isArray(row.payload?.actions) && row.payload.actions.length > 0))) errors.push("backend effect is not causally linked to a returned Stagehand action");
     const triggerEvents = events.filter((event) => event.type === "fault.triggered");
     const faulted = result.mode === "faulted";
@@ -70,10 +82,10 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
     if (!keysAre(schedule, ["schemaVersion", "mode", "seed", "faults"]) || schedule.schemaVersion !== "1.0.0") errors.push("saved schedule schema or field set is invalid");
     const resultFault = result.fault as ObjectValue | undefined;
     if (Boolean(resultFault?.armed) !== faulted || Boolean(resultFault?.triggered) !== (triggerEvents.length === 1) || (faulted && resultFault?.type !== faultDoc?.type)) errors.push("run result fault fields disagree with saved schedule/events");
-    if (faulted && triggerEvents.length !== 1) errors.push("faulted Stagehand run must prove exactly one real fault trigger");
-    if (faulted && (triggerEvents.length !== 1 || triggerEvents[0]?.payload.upstreamCommitted !== true || triggerEvents[0]?.payload.browserReceivedSuccess !== false)) errors.push("fault trigger and commit-before-loss evidence are incomplete");
+    if (faulted && triggerEvents.length > 1) errors.push("faulted Stagehand run contains multiple fault trigger events");
+    if (faulted && triggerEvents.length === 1 && (triggerEvents[0]?.payload.upstreamCommitted !== true || triggerEvents[0]?.payload.browserReceivedSuccess !== false)) errors.push("observed fault trigger lacks commit-before-loss evidence");
     if (!faulted && triggerEvents.length !== 0) errors.push("clean run contains a triggered fault");
-    if (faulted) {
+    if (faulted && triggerEvents.length === 1) {
       const trigger = triggerEvents[0]!;
       const expectedPhase = FAULT_SCHEDULE_REGISTRY.find((binding) => binding.scenarioId === "supportdesk-refund-v1")?.expectedPhase;
       if (trigger.payload.type !== faultDoc?.type || trigger.payload.phase !== expectedPhase || trigger.payload.upstreamCommitted !== true || trigger.payload.browserReceivedSuccess !== false || !actionRows.some((row) => row.actionId === trigger.actionId && Array.isArray(row.payload?.actions) && row.payload.actions.length > 0)) errors.push("fault type/phase or triggering Stagehand action differs from the canonical SupportDesk schedule binding");
@@ -95,6 +107,8 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
         ? "observer_inconclusive"
         : contract && contract.passed === false
           ? "contract_violation"
+          : result.mode === "faulted" && (result.fault as ObjectValue | undefined)?.triggered === false && result.status === "injection_error"
+            ? "injection_error"
           : result.taskCompleted === true && result.observedEffects.length === 1
             ? "passed"
             : "agent_error";
