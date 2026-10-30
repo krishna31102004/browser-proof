@@ -7,7 +7,7 @@
 
 - Active milestone / work slice: `Prompt 10 ShopBench third controlled app; local and hosted acceptance passed; stop here`
 - Last completed verified gate: `Prompt 10 local and hosted: frozen install, typecheck, workspace tests (89), M0 3/3+3/3+3/3, AdminBench 12/12+3/3, hardened positive and vulnerable expected-negative controls, network 27/27, browser-state 54/54, context 36/36, ShopBench 42/42, viewer build and responsive smoke 25/25; independent review PASS; GitHub Actions run 41010916390 passed on source SHA 1e48e766446bbf1e3ca15dc3d6314f9bf0c4fa20.`
-- Main branch / HEAD: `Prompt 10 source and CI correction commit 1e48e766446bbf1e3ca15dc3d6314f9bf0c4fa20 is pushed and matches origin/main. A final docs-only closeout is pending. Existing user files .agents/, .codex/, .github/hooks/, BROWSERPROOF_POST_UI_ROADMAP.md and local prompts/artifacts are excluded.`
+- Main branch / HEAD: `Prompt 10 CI-tested source SHA 1e48e766446bbf1e3ca15dc3d6314f9bf0c4fa20 passed GitHub Actions. The README/plan/log closeout is committed with the verified noreply identity and pushed to origin/main; post-push local and remote main matched exactly. Final docs-only HEAD is reported in the final response. Existing user files .agents/, .codex/, .github/hooks/, BROWSERPROOF_POST_UI_ROADMAP.md and local prompts/artifacts are excluded.`
 - Project locally runnable: `YES — frozen-lockfile install from local pnpm store, Chromium, typecheck, tests, CLI gates, production build, and local viewer smoke verified`
 - Public deployment URL: `https://browserproof.vercel.app — Prompt 06 production deployment dpl_xhSrdpYJgZG4ph5n9YyCY8dEG9bp READY; anonymous smoke passed; 48/48 static files SHA-256 matched`
 - M0 clean / faulted / repro: `3/3, 3/3, 3/3 — PASS (rerun after Day 2 integration)`
@@ -17,7 +17,7 @@
 - GitHub Actions regression demonstration: `Prompt 10 PASS — run 41010916390, job 123916352672, on SHA 1e48e766446bbf1e3ca15dc3d6314f9bf0c4fa20; all steps including the ShopBench 42-trial campaign and evidence upload succeeded. First run 41010202149 was PARTIAL due an assertion-name mapping bug; its 42-trial report passed, and the corrected assertion was independently reviewed and passed on the full rerun.`
 - Vercel preflight: `Authenticated user krishna31102004 and project browserproof (prj_tovNlIuciIxSz6NjZNeoYKt5yApY) confirmed in authorized personal scope krishna31102004s-projects; project root is apps/viewer`
 - Important unresolved issue: `No Prompt 10 acceptance blocker remains. Two malformed Prompt 09 commit identities are preserved without history rewrite; both Prompt 10 commits pass the noreply identity guard. Benchmark 0/36 NOT EXECUTED; detection rate UNMEASURED; Stagehand NOT IMPLEMENTED.`
-- Next action: `Commit and push the final docs-only record with verified identity, confirm final local/remote SHA equality, then stop. Do not start Prompt 11.`
+- Next action: `Stop after Prompt 10. Do not start Prompt 11, freeze or execute the 36-case benchmark, change/deploy the website, or integrate Stagehand.`
 
 ## Prompt-by-prompt entries
 
