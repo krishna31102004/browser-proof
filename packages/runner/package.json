@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@browserbasehq/stagehand": "4.3.0",
     "@browserproof/contracts": "workspace:*",
     "@browserproof/demo-admin": "workspace:*",
     "@browserproof/demo-shop": "workspace:*",

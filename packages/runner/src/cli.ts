@@ -13,6 +13,9 @@ import { contextFaultReproductionIdsAreFresh, createContextFaultSchedule, execut
 import { createShopSchedule, executeShopRun, shopSignature, validateShopArtifacts, validateShopSchedule, type ShopRunResult } from "./shop-run.js";
 import { validateRunArtifacts } from "./run-artifact-validation.js";
 import type { ShopAgentPolicy, ShopBenchFaultSchedule, ShopWorkflowId } from "@browserproof/contracts";
+import { APPROVED_STAGEHAND_MODELS, STAGEHAND_SDK_VERSION, validateStagehandSpendConfiguration } from "./stagehand-adapter.js";
+import { executeStagehandRun, executeStagehandSameBrowserSmoke, stagehandPreflight } from "./stagehand-run.js";
+import { validateStagehandArtifacts, validateStagehandSavedSchedule, validateStagehandSpikeArtifacts } from "./stagehand-artifact-validation.js";
 
 function argument(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -40,6 +43,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 async function runOnce(): Promise<number> {
+  if (argument("--adapter") === "stagehand-v4") return runStagehandOnce();
   if (argument("--scenario") === "shopbench") return runShopBenchOnce();
   if (argument("--scenario") === "context-faults") return runContextFaultOnce();
   if (argument("--scenario") === "browser-state") return runBrowserStateOnce();
@@ -51,6 +55,104 @@ async function runOnce(): Promise<number> {
   const run = await executeRun({ mode, seed });
   printRun(run.result, run.artifactDir);
   return isExpectedRun(run.result) && await validateRunArtifacts(run.artifactDir, run.result) ? 0 : 1;
+}
+
+function validateStagehandFlags(allowed: ReadonlySet<string>, args: readonly string[]): void {
+  const seen = new Set<string>();
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index]!;
+    if (!allowed.has(flag)) throw new Error(`Unknown Stagehand CLI argument: ${flag}`);
+    if (seen.has(flag)) throw new Error(`Duplicate Stagehand CLI argument: ${flag}`);
+    seen.add(flag);
+    if (flag === "--allow-model-spend") continue;
+    if (!args[index + 1] || args[index + 1]!.startsWith("--")) throw new Error(`Missing value for ${flag}`);
+    index += 1;
+  }
+}
+
+function stagehandRunConfiguration(): { model: typeof APPROVED_STAGEHAND_MODELS[number]; key: string } {
+  const model = argument("--model");
+  const allowModelSpend = process.argv.includes("--allow-model-spend");
+  const providerApiKey = process.env.OPENAI_API_KEY;
+  if (!model || !APPROVED_STAGEHAND_MODELS.includes(model as typeof APPROVED_STAGEHAND_MODELS[number])) throw new Error(`Stagehand model must be explicitly set to a supported value: ${APPROVED_STAGEHAND_MODELS.join(", ")}`);
+  validateStagehandSpendConfiguration({ model, allowModelSpend, ...(providerApiKey ? { providerApiKey } : {}) });
+  return { model: model as typeof APPROVED_STAGEHAND_MODELS[number], key: providerApiKey! };
+}
+
+async function runStagehandOnce(): Promise<number> {
+  validateStagehandFlags(new Set(["--scenario", "--adapter", "--mode", "--seed", "--model", "--allow-model-spend"]), process.argv.slice(3));
+  if (argument("--scenario") !== "supportdesk-refund-v1") throw new Error("Stagehand supports only --scenario supportdesk-refund-v1 in Prompt 12");
+  const mode = argument("--mode") as RunMode | undefined; const seed = argument("--seed");
+  if ((mode !== "clean" && mode !== "faulted") || !seed) throw new Error("Usage: pnpm bp run --scenario supportdesk-refund-v1 --adapter stagehand-v4 --mode <clean|faulted> --seed <seed> --model <supported-model> --allow-model-spend");
+  const config = stagehandRunConfiguration();
+  const run = await executeStagehandRun({ mode, seed, model: config.model, providerApiKey: config.key, allowModelSpend: true });
+  const validation = await validateStagehandArtifacts(run.artifactDir, [config.key]);
+  console.log(JSON.stringify({ runId: run.result.runId, adapter: "stagehand-v4", status: run.result.status, taskCompleted: run.result.taskCompleted, effects: run.result.observedEffects.map(({ effectId, actionId, requestId }) => ({ effectId, actionId, requestId })), fault: run.result.fault, observerStatus: run.result.observerStatus, artifactValid: validation.valid, validationErrors: validation.errors, artifactDir: run.artifactDir }, null, 2));
+  return validation.valid && run.result.status !== "browser_error" && run.result.status !== "timeout" && run.result.observerStatus === "complete" ? 0 : 1;
+}
+
+async function stagehandCommand(): Promise<number> {
+  const subcommand = process.argv[3];
+  if (subcommand === "preflight") {
+    validateStagehandFlags(new Set(), process.argv.slice(4));
+    const result = await stagehandPreflight(); console.log(JSON.stringify({ ...result, approvedModels: APPROVED_STAGEHAND_MODELS, pinnedSdk: STAGEHAND_SDK_VERSION }, null, 2));
+    return result.nodeCompatible === true && result.chromiumInstalled === true ? 0 : 1;
+  }
+  if (subcommand === "spike") {
+    validateStagehandFlags(new Set(), process.argv.slice(4));
+    const result = await executeStagehandSameBrowserSmoke();
+    const { execFileSync } = await import("node:child_process");
+    execFileSync("unzip", ["-t", resolve(String(result.artifactDir), "trace.zip")], { stdio: "ignore" });
+    const effects = result.effects as Array<{ effectId: string; entityId: string; actionId: string; requestId: string }>;
+    const validation = await validateStagehandSpikeArtifacts(String(result.artifactDir));
+    const valid = validation.valid && result.modelInvoked === false && result.liveInferenceCalls === 0 && result.wrongContextRejected === true && result.requestSeen === true && result.browserFailureSeen === true && result.faultTriggered === true && result.observerStatus === "complete" && effects.length === 1 && effects[0]?.entityId === "A123";
+    console.log(JSON.stringify({ ...result, artifactValid: valid, validationErrors: validation.errors, traceIntegrity: "unzip -t passed", taskMode: "same-browser-spike; deterministic Stagehand Page operation; no model inference" }, null, 2));
+    return valid ? 0 : 1;
+  }
+  throw new Error("Usage: pnpm bp stagehand <preflight|spike>");
+}
+
+async function verifyStagehandCampaign(): Promise<number> {
+  validateStagehandFlags(new Set(["--scenario", "--allow-model-spend", "--model", "--max-model-runs"]), process.argv.slice(3));
+  if (argument("--scenario") !== "stagehand-smoke") throw new Error("Usage: pnpm bp verify --scenario stagehand-smoke --allow-model-spend --max-model-runs 9 --model <supported-model>");
+  const maximum = Number(argument("--max-model-runs"));
+  if (maximum !== 9) throw new Error("Stagehand acceptance campaign requires an explicit maximum of exactly 9 model-backed runs (3 clean + 3 faulted + 3 fresh replays)");
+  const config = stagehandRunConfiguration();
+  const cleanRuns = [] as Awaited<ReturnType<typeof executeStagehandRun>>[];
+  const faultedRuns = [] as Awaited<ReturnType<typeof executeStagehandRun>>[];
+  const reproductionRuns = [] as Awaited<ReturnType<typeof executeStagehandRun>>[];
+  for (let index = 1; index <= 3; index += 1) cleanRuns.push(await executeStagehandRun({ mode: "clean", seed: `stagehand-clean-${index}`, model: config.model, providerApiKey: config.key, allowModelSpend: true }));
+  for (let index = 1; index <= 3; index += 1) faultedRuns.push(await executeStagehandRun({ mode: "faulted", seed: `stagehand-faulted-${index}`, model: config.model, providerApiKey: config.key, allowModelSpend: true }));
+  const source = faultedRuns[0]!;
+  const sourceSchedule = await readJson(resolve(source.artifactDir, "schedule.json"));
+  if (!validateStagehandSavedSchedule(sourceSchedule, "stagehand-faulted-1")) throw new Error("Source faulted Stagehand run produced an invalid saved schedule");
+  const savedSchedule = (sourceSchedule.faults as unknown[])[0] as FaultSchedule;
+  for (let index = 1; index <= 3; index += 1) reproductionRuns.push(await executeStagehandRun({ mode: "faulted", seed: savedSchedule.seed, schedule: savedSchedule, model: config.model, providerApiKey: config.key, allowModelSpend: true }));
+  const all = [...cleanRuns, ...faultedRuns, ...reproductionRuns];
+  let validArtifacts = 0;
+  for (const run of all) if ((await validateStagehandArtifacts(run.artifactDir, [config.key])).valid) validArtifacts += 1;
+  const replaySchedules = await Promise.all([...faultedRuns, ...reproductionRuns].map(async ({ artifactDir }) => readJson(resolve(artifactDir, "schedule.json"))));
+  const scheduleIdentityMatches = replaySchedules.every((document) => document.mode === "faulted" && JSON.stringify(document.faults) === JSON.stringify([savedSchedule]));
+  const eventEvidence = await Promise.all([...faultedRuns, ...reproductionRuns].map(async ({ artifactDir }) => {
+    const text = await readFile(resolve(artifactDir, "events.jsonl"), "utf8");
+    const events = text.trim().split("\n").map((line) => JSON.parse(line) as { type: string; sequence: number; actionId?: string; requestId?: string; payload: Record<string, unknown> });
+    const trigger = events.find((event) => event.type === "fault.triggered");
+    const commitIndex = events.findIndex((event) => event.type === "backend.commit_confirmed" && event.actionId === trigger?.actionId && event.requestId === trigger?.requestId);
+    const triggerIndex = trigger ? events.indexOf(trigger) : -1;
+    const failureIndex = events.findIndex((event) => event.type === "network.request_failed" && event.actionId === trigger?.actionId && event.requestId === trigger?.requestId);
+    return { phase: trigger?.payload.phase ?? null, actionId: trigger?.actionId ?? null, requestId: trigger?.requestId ?? null, commitSequence: commitIndex >= 0 ? events[commitIndex]?.sequence : null, triggerSequence: trigger?.sequence ?? null, browserFailureSequence: failureIndex >= 0 ? events[failureIndex]?.sequence : null, commitBeforeTriggerBeforeFailure: commitIndex >= 0 && triggerIndex > commitIndex && failureIndex > triggerIndex };
+  }));
+  const idsUnique = new Set(all.map(({ result }) => result.runId)).size === 9;
+  const effectsUnique = new Set(all.flatMap(({ result }) => result.observedEffects.map(({ effectId }) => effectId))).size === all.flatMap(({ result }) => result.observedEffects.map(({ effectId }) => effectId)).length;
+  const cleanAccept = cleanRuns.filter(({ result }) => result.status === "passed" && result.taskCompleted && result.observedEffects.length === 1 && result.observerStatus === "complete").length;
+  const faultAccept = [...faultedRuns, ...reproductionRuns].filter(({ result }) => result.fault.triggered && result.fault.upstreamCommitted && result.fault.browserReceivedSuccess === false && result.observerStatus === "complete").length;
+  const signatures = reproductionRuns.map(({ result }) => `${result.status}|effects=${result.observedEffects.length}`);
+  const phasesValid = eventEvidence.every((evidence) => evidence.phase === "after_upstream_commit_before_browser_response" && evidence.commitBeforeTriggerBeforeFailure);
+  const report = { schemaVersion: 1, campaign: "stagehand-v4-supportdesk", model: config.model, sdkVersion: STAGEHAND_SDK_VERSION, maxRuns: 9, cleanRunIds: cleanRuns.map(({ result }) => result.runId), faultedRunIds: faultedRuns.map(({ result }) => result.runId), reproductionRunIds: reproductionRuns.map(({ result }) => result.runId), cleanOutcomes: cleanRuns.map(({ result }) => ({ status: result.status, taskCompleted: result.taskCompleted, effects: result.observedEffects.map(({ effectId, actionId, requestId }) => ({ effectId, actionId, requestId })) })), faultedOutcomes: [...faultedRuns, ...reproductionRuns].map(({ result }, index) => ({ runId: result.runId, status: result.status, taskCompleted: result.taskCompleted, triggered: result.fault.triggered, triggerEvidence: eventEvidence[index], effects: result.observedEffects.map(({ effectId, actionId, requestId }) => ({ effectId, actionId, requestId })) })), sourceScheduleId: savedSchedule.scheduleId, replayScheduleIds: replaySchedules.map((document) => (document.faults as Array<Record<string, unknown>>)[0]?.scheduleId), scheduleIdentityMatches, reproductionNormalizedOutcomes: signatures, reproductionSignatureMatches: signatures.filter((signature) => signature === `${source.result.status}|effects=${source.result.observedEffects.length}`).length, validatedArtifacts: validArtifacts, cleanAcceptance: `${cleanAccept}/3`, faultAndReplayAcceptance: `${faultAccept}/6`, triggerPhaseAndChronologyValid: phasesValid, uniqueRunIds: idsUnique, uniqueEffectIds: effectsUnique, allAccepted: validArtifacts === 9 && idsUnique && effectsUnique && cleanAccept === 3 && faultAccept === 6 && scheduleIdentityMatches && phasesValid, artifacts: all.map(({ artifactDir }) => artifactDir) };
+  const reportPath = resolve("artifacts", `stagehand-verification-${randomUUID()}.json`);
+  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  console.log(JSON.stringify({ ...report, reportPath }, null, 2));
+  return report.allAccepted ? 0 : 1;
 }
 
 function shopWorkflowArg(): ShopWorkflowId | undefined {
@@ -334,6 +436,7 @@ async function reproduce(): Promise<number> {
   const times = Number(argument("--times", "3"));
   if (!sourceArg || !Number.isInteger(times) || times < 1) throw new Error("Usage: pnpm bp repro artifacts/<runId> --times <count>");
   const sourceDir = resolve(sourceArg);
+  if (argument("--adapter") === "stagehand-v4") return reproduceStagehand(sourceDir, times);
   try {
     const shopResult = await readJson(resolve(sourceDir, "result.json"));
     if (typeof shopResult.scenarioId === "string" && shopResult.scenarioId.startsWith("shopbench-")) return reproduceShopBench(sourceDir, shopResult, times);
@@ -380,6 +483,30 @@ async function reproduce(): Promise<number> {
   }
   console.log(`Reproduction: ${successes}/${times}`);
   return successes === times ? 0 : 1;
+}
+
+async function reproduceStagehand(sourceDir: string, times: number): Promise<number> {
+  validateStagehandFlags(new Set(["--adapter", "--times", "--model", "--allow-model-spend"]), process.argv.slice(4));
+  if (times > 9) throw new Error("Stagehand replay count must be between 1 and 9");
+  const config = stagehandRunConfiguration();
+  const sourceValidation = await validateStagehandArtifacts(sourceDir, [config.key]);
+  if (!sourceValidation.valid) throw new Error(`Stagehand replay source failed artifact validation: ${sourceValidation.errors.join("; ")}`);
+  const [scenario, scheduleDoc, originalResult, metadata] = await Promise.all([
+    readJson(resolve(sourceDir, "scenario.json")), readJson(resolve(sourceDir, "schedule.json")), readJson(resolve(sourceDir, "result.json")), readJson(resolve(sourceDir, "agent-metadata.json")),
+  ]);
+  if (scenario.scenarioId !== "supportdesk-refund-v1" || scheduleDoc.mode !== "faulted" || originalResult.mode !== "faulted" || !Array.isArray(scheduleDoc.faults)) throw new Error("Stagehand replay requires a valid faulted SupportDesk run and saved schedule");
+  if (!validateStagehandSavedSchedule(scheduleDoc, typeof scheduleDoc.seed === "string" ? scheduleDoc.seed : undefined)) throw new Error("Stagehand saved schedule does not match the supported response-loss workflow");
+  const schedule = scheduleDoc.faults[0] as FaultSchedule;
+  if (metadata.model !== config.model) throw new Error("Replay model must match the original Stagehand model");
+  const runs = [] as Awaited<ReturnType<typeof executeStagehandRun>>[];
+  for (let index = 0; index < times; index += 1) runs.push(await executeStagehandRun({ mode: "faulted", seed: schedule.seed, schedule, model: config.model, providerApiKey: config.key, allowModelSpend: true }));
+  let validCount = 0;
+  for (const run of runs) {
+    const validation = await validateStagehandArtifacts(run.artifactDir, [config.key]);
+    if (validation.valid && run.result.runId !== originalResult.runId && run.result.fault.triggered && run.result.observerStatus === "complete") validCount += 1;
+  }
+  console.log(JSON.stringify({ reproduction: `${validCount}/${times}`, sourceRunId: originalResult.runId, scheduleId: schedule.scheduleId, model: config.model, runIds: runs.map(({ result }) => result.runId), normalizedOutcomes: runs.map(({ result }) => `${result.status}|effects=${result.observedEffects.length}`), effects: runs.map(({ result }) => result.observedEffects.map(({ effectId, actionId, requestId }) => ({ effectId, actionId, requestId }))), artifacts: runs.map(({ artifactDir }) => artifactDir) }, null, 2));
+  return validCount === times ? 0 : 1;
 }
 
 async function reproduceShopBench(sourceDir: string, source: Record<string, unknown>, times: number): Promise<number> {
@@ -729,7 +856,8 @@ async function main(): Promise<void> {
   let code: number;
   if (command === "run") code = await runOnce();
   else if (command === "repro") code = await reproduce();
-  else if (command === "verify") code = scenario === "shopbench" ? await verifyShopBench() : scenario === "adminbench" ? await verifyAdminBench() : scenario === "network-faults" ? await verifyNetworkFaults() : scenario === "browser-faults" ? await verifyBrowserFaults() : scenario === "context-faults" ? await verifyContextFaults() : await verify();
+  else if (command === "verify") code = scenario === "stagehand-smoke" ? await verifyStagehandCampaign() : scenario === "shopbench" ? await verifyShopBench() : scenario === "adminbench" ? await verifyAdminBench() : scenario === "network-faults" ? await verifyNetworkFaults() : scenario === "browser-faults" ? await verifyBrowserFaults() : scenario === "context-faults" ? await verifyContextFaults() : await verify();
+  else if (command === "stagehand") code = await stagehandCommand();
   else if (command === "regression") code = await runRegression();
   else if (command === "export-demo") code = await exportDemo();
   else throw new Error("Usage: pnpm bp <run|repro|verify>");

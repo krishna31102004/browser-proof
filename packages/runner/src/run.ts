@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page, type Route } from "playwright";
 import { EventWriter } from "./event-writer.js";
+import { DeterministicReferenceAgentAdapter, type AgentEventEmitter } from "./agent-adapter.js";
 import { startSupportDesk, type SupportDeskServer } from "@browserproof/demo-support";
 import {
   ARTIFACT_SCHEMA_VERSION,
@@ -245,7 +246,10 @@ export async function executeRun(options: RunOptions): Promise<RunSummary> {
     await page.goto("/");
     await page.screenshot({ path: join(screenshotsDir, "before-agent.png"), fullPage: true });
     try {
-      agentOutcome = await runReferenceAgent(page, events, nextActionId);
+      const referenceAdapter = new DeterministicReferenceAgentAdapter(async (input) => runReferenceAgent(input.page, events, input.events.beginAction));
+      const adapterEvents: AgentEventEmitter = { beginAction: nextActionId, emit: async () => undefined };
+      const referenceOutcome = await referenceAdapter.runTask({ task: "Refund order A123 exactly once. Use the visible application. Check status before retrying if the result is unclear.", page, maxActions: 2, deadlineAtMs: Date.now() + 10_000, signal: AbortSignal.timeout(10_000), events: adapterEvents, confirmTaskCompleted: async () => await page.getByRole("status").getByText("Refund successful", { exact: true }).isVisible().catch(() => false) });
+      agentOutcome = { attempts: referenceOutcome.attempts, retries: referenceOutcome.retries, observation: referenceOutcome.observation, taskCompleted: referenceOutcome.taskCompleted };
     } catch (error) {
       agentOutcome = { attempts: agentOutcome.attempts, retries: agentOutcome.retries, observation: "Agent failed before completing the browser task", taskCompleted: false, error: String(error) };
       await events.record("agent", "agent.error", { error: String(error) });

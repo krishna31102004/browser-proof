@@ -274,6 +274,34 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n## Prompt 10 ShopBench evidence\n\n| Workflow | Validated | Trial cells |\n|---|---:|---|\n${matrix}\n\nReport: \`artifacts/${name}\`\n`);
           if (!valid) process.exit(1);
           NODE
+      - name: Run Stagehand adapter isolation tests and no-LLM CDP integration test
+        env:
+          OPENAI_API_KEY: ""
+        run: pnpm --filter @browserproof/runner exec vitest run test/stagehand-adapter.test.ts test/stagehand-same-browser.test.ts test/stagehand-artifact-validation.test.ts --maxWorkers=1 --minWorkers=1
+      - name: Run Stagehand v4 same-browser smoke without model inference
+        shell: bash
+        run: |
+          mkdir -p ci-evidence
+          find artifacts -mindepth 1 -maxdepth 1 -type d -name 'stagehand-spike-*' -printf '%f\n' 2>/dev/null | sort > ci-evidence/stagehand-spikes-before.txt || true
+          pnpm bp stagehand preflight > ci-evidence/stagehand-preflight.json
+          pnpm bp stagehand spike > ci-evidence/stagehand-spike.log
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const before = new Set(fs.readFileSync('ci-evidence/stagehand-spikes-before.txt', 'utf8').split(/\r?\n/).filter(Boolean));
+          const created = fs.readdirSync('artifacts').filter((entry) => entry.startsWith('stagehand-spike-') && !before.has(entry));
+          if (created.length !== 1) throw new Error(`Expected one new Stagehand spike artifact directory, found ${created.length}`);
+          const directory = `artifacts/${created[0]}`;
+          const evidence = JSON.parse(fs.readFileSync(`${directory}/same-browser-spike.json`, 'utf8'));
+          const preflight = JSON.parse(fs.readFileSync('ci-evidence/stagehand-preflight.json', 'utf8'));
+          const valid = evidence.modelInvoked === false && evidence.liveInferenceCalls === 0 && evidence.wrongContextRejected === true
+            && evidence.pageProof.stagehandPageId === evidence.pageProof.playwrightTargetId && evidence.pageProof.stagehandUrl === evidence.pageProof.playwrightUrl
+            && evidence.pageProof.controlPlaneBlocked === true && evidence.pageProof.externalOriginBlocked === true
+            && evidence.requestSeen === true && evidence.faultTriggered === true && evidence.browserFailureSeen === true && evidence.observerStatus === 'complete'
+            && evidence.cleanupVerified === true && evidence.effects.length === 1 && evidence.effects[0].entityId === 'A123'
+            && preflight.inferencePerformed === false && preflight.nodeCompatible === true && preflight.chromiumInstalled === true;
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n## Prompt 12 Stagehand no-inference CDP smoke\n\n- Result: ${valid ? 'PASS' : 'FAIL'}\n- Run: \`${evidence.runId}\`\n- Same target: \`${evidence.pageProof.stagehandPageId}\`\n- Independently observed A123 effects: ${evidence.effects.length}\n- Trace: \`${directory}/trace.zip\`\n- Inference: ${evidence.liveInferenceCalls} (none)\n- Cleanup: ${evidence.cleanupVerified}\n`);
+          if (!valid) process.exit(1);
+          NODE
       - name: Upload run and failure evidence
         if: always()
         uses: actions/upload-artifact@v4
