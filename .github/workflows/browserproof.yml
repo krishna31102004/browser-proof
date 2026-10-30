@@ -283,8 +283,8 @@ jobs:
         run: |
           mkdir -p ci-evidence
           find artifacts -mindepth 1 -maxdepth 1 -type d -name 'stagehand-spike-*' -printf '%f\n' 2>/dev/null | sort > ci-evidence/stagehand-spikes-before.txt || true
-          pnpm bp stagehand preflight > ci-evidence/stagehand-preflight.json
-          pnpm bp stagehand spike > ci-evidence/stagehand-spike.log
+          pnpm exec tsx packages/runner/src/cli.ts stagehand preflight > ci-evidence/stagehand-preflight.json
+          pnpm exec tsx packages/runner/src/cli.ts stagehand spike > ci-evidence/stagehand-spike.log
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const before = new Set(fs.readFileSync('ci-evidence/stagehand-spikes-before.txt', 'utf8').split(/\r?\n/).filter(Boolean));
