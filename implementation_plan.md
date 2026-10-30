@@ -1,7 +1,7 @@
 # BrowserProof: Four-Day Recruiter-Ready Implementation Plan
 
 **Planning date:** 2026-10-28
-**Status:** Prompt 09 verified the 10/10 fault catalog in local Chromium and source-matched GitHub Actions run `40991357715`. Prompt 10's third controlled app and four ShopBench workflows passed 42/42 locally and in source-matched run `41010916390` at `1e48e766446bbf1e3ca15dc3d6314f9bf0c4fa20`. Prompt 11's ShopBench artifact fixes, shared contract evaluators, canonical runtime schedule registry, compatibility tests, and candidate workflow inventory now pass local verification and independent review; source-matched hosted CI is pending publication. Frozen benchmark remains **0/36 NOT EXECUTED**, detection rate **UNMEASURED**, and Stagehand is **NOT IMPLEMENTED**.
+**Status:** Prompt 09 verified the 10/10 fault catalog in local Chromium and source-matched GitHub Actions run `40991357715`. Prompt 10's third controlled app and four ShopBench workflows passed 42/42 locally and in source-matched run `41010916390` at `1e48e766446bbf1e3ca15dc3d6314f9bf0c4fa20`. Prompt 11's ShopBench evidence fixes, shared contract evaluators, canonical runtime schedule registry, compatibility tests and candidate workflow inventory passed local verification, independent review, and source-matched GitHub Actions run `41029713427` at source commit `0a2d75b071f93dd687528ed97480ba5e63613466`. Frozen benchmark remains **0/36 NOT EXECUTED**, detection rate **UNMEASURED**, and Stagehand is **NOT IMPLEMENTED**.
 **Source of truth:** `BrowserProof_Complete_Project_Handoff.md` (locked product and technical thesis).
 **Execution record:** `CODEX_RUN_LOG.md` (observed results only).
 **Agent rules:** `AGENTS.md`.
