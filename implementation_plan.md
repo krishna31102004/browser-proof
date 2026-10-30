@@ -1,7 +1,7 @@
 # BrowserProof: Four-Day Recruiter-Ready Implementation Plan
 
 **Planning date:** 2026-10-28
-**Status:** Prompt 09 verified the complete 10/10 fault catalog in local Chromium and source-matched GitHub Actions run `40991357715`. Prompt 10 adds the third local controlled application and four ShopBench workflows; its 42/42 local Chromium acceptance and independent review passed on 2026-10-30. Prompt 10 source commit and source-matched hosted Actions remain pending publication; do not count Prompt 10 complete until that gate passes. Frozen benchmark remains **0/36 NOT EXECUTED**, detection rate **UNMEASURED**, and Stagehand is **NOT IMPLEMENTED**.
+**Status:** Prompt 09 verified the complete 10/10 fault catalog in local Chromium and source-matched GitHub Actions run `40991357715`. Prompt 10 adds the third local controlled application and four ShopBench workflows; its 42/42 local Chromium acceptance and independent review passed. Source commit `205ec5858d8c8087c61135e5e29269de078be2af` exposed and preserved a CI cell-name assertion failure even though its hosted 42/42 report passed; the correction in `1e48e766446bbf1e3ca15dc3d6314f9bf0c4fa20` passed complete source-matched GitHub Actions run `41010916390`. Prompt 10 is verified at that SHA. Frozen benchmark remains **0/36 NOT EXECUTED**, detection rate **UNMEASURED**, and Stagehand is **NOT IMPLEMENTED**.
 **Source of truth:** `BrowserProof_Complete_Project_Handoff.md` (locked product and technical thesis).
 **Execution record:** `CODEX_RUN_LOG.md` (observed results only).
 **Agent rules:** `AGENTS.md`.
