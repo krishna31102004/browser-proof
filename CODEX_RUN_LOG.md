@@ -5,9 +5,9 @@
 
 ## Current checkpoint (update after each prompt)
 
-- Active milestone / work slice: `Prompt 09 popup and storage faults; local acceptance, independent review, source CI and publication verified; stop here`
+- Active milestone / work slice: `Prompt 09 popup and storage faults; local and hosted technical acceptance verified; publication identity limitation documented; stop here`
 - Last completed verified gate: `M0 3/3 + 3/3 + 3/3; AdminBench 12/12 primary + 3/3 repro; workspace tests 75/75; typecheck; network campaign 27/27; browser-state campaign 54/54; Prompt 09 campaign 36/36 (18/18 per new type); viewer build and 25/25 responsive smoke; independent reviewer PASS; GitHub Actions run 40991357715 passed on source SHA 57757a7d5a8dd6e8fe47353f5031d12e699d79db`
-- Main branch / HEAD: `Prompt 09 source commit 57757a7d5a8dd6e8fe47353f5031d12e699d79db was pushed to origin/main, passed hosted CI and matched remote; documentation closeout 7cf2acf397b241ba75be94dc449bb9a32bafe276 also matched origin/main. Git author/committer metadata on those two commits was malformed; local config has now been corrected to the verified noreply identity for future commits without rewriting published history.`
+- Main branch / HEAD: `Source commit 57757a7d5a8dd6e8fe47353f5031d12e699d79db passed hosted CI. The Prompt 09 source and first docs commit have malformed author/committer identity and remain unchanged under the no-rewrite rule. Git identity was corrected; corrective docs commit acd31d205692049d5536c86d3f54dd187a9f4431 used the verified noreply author/committer and was pushed. Final post-push local/remote SHA equality is recorded in the final response.`
 - Project locally runnable: `YES — frozen-lockfile install from local pnpm store, Chromium, typecheck, tests, CLI gates, production build, and local viewer smoke verified`
 - Public deployment URL: `https://browserproof.vercel.app — Prompt 06 production deployment dpl_xhSrdpYJgZG4ph5n9YyCY8dEG9bp READY; anonymous smoke passed; 48/48 static files SHA-256 matched`
 - M0 clean / faulted / repro: `3/3, 3/3, 3/3 — PASS (rerun after Day 2 integration)`
@@ -17,7 +17,7 @@
 - GitHub Actions regression demonstration: `Prompt 09 PASS — run 40991357715 on source SHA 57757a7d5a8dd6e8fe47353f5031d12e699d79db; all gate steps succeeded, including M0/AdminBench/tests/viewer, network 27-trial, browser-state 54-trial, popup/storage 36-trial campaigns and evidence upload.`
 - Vercel preflight: `Authenticated user krishna31102004 and project browserproof (prj_tovNlIuciIxSz6NjZNeoYKt5yApY) confirmed in authorized personal scope krishna31102004s-projects; project root is apps/viewer`
 - Important unresolved issue: `Publication identity requirement was not met on the already-pushed Prompt 09 source/docs commits: both contain author/committer --get < --get > due an incorrect git config command. Correct noreply config is now verified for future commits. Published history is preserved under the no-rewrite repository rule; count release publication as PARTIAL for this identity gate. Benchmark 0/36 NOT EXECUTED; detection rate UNMEASURED; Stagehand and ShopBench NOT IMPLEMENTED.`
-- Next action: `Publish this transparent identity correction with the now-verified noreply identity, verify final remote SHA, and stop. Do not rewrite earlier commits.`
+- Next action: `Stop after the transparent identity correction and final remote-SHA check. Do not rewrite earlier commits.`
 
 ## Prompt-by-prompt entries
 
