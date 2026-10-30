@@ -215,9 +215,10 @@ jobs:
           const report = JSON.parse(fs.readFileSync(`artifacts/${name}`, 'utf8'));
           const workflows = ['shopbench-place-order-v1', 'shopbench-update-shipping-v1', 'shopbench-cancel-order-v1', 'shopbench-apply-coupon-v1'];
           const cells = ['vulnerableClean', 'vulnerableFaulted', 'hardenedClean', 'hardenedFaulted', 'vulnerableFreshReproduction', 'hardenedFreshReproduction'];
+          const trialCell = { vulnerableClean: 'vulnerable_clean', vulnerableFaulted: 'vulnerable_faulted', hardenedClean: 'hardened_clean', hardenedFaulted: 'hardened_faulted', vulnerableFreshReproduction: 'vulnerable_reproduction', hardenedFreshReproduction: 'hardened_reproduction', clean_only: 'clean_only' };
           const byWorkflow = new Map(report.workflows.map((row) => [row.workflow, row]));
           const expectedCell = (row, cell) => {
-            const trials = row.trials.filter((trial) => trial.cell === cell);
+            const trials = row.trials.filter((trial) => trial.cell === trialCell[cell]);
             if (trials.length !== 3 || !trials.every((trial) => trial.accepted && trial.artifactValid && trial.observerStatus === 'complete')) return false;
             const vulnerable = cell.startsWith('vulnerable');
             const clean = cell.endsWith('Clean');
