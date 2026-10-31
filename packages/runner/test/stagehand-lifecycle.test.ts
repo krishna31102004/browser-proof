@@ -68,6 +68,22 @@ describe("Stagehand timeout fencing and quiescence", () => {
     expect(result.cleanupErrors).toContain("temporary browser profile removal failed");
   });
 
+  it("captures synchronous Stagehand close errors and continues ledger-safe teardown", async () => {
+    const order: string[] = [];
+    const result = await quiesceStagehandSession({
+      closeOwnedBrowser: async () => { order.push("browser-close"); },
+      browserPortIsClosed: async () => true,
+      disconnectPlaywright: async () => { order.push("playwright-disconnect"); },
+      closeStagehandClient: () => { order.push("stagehand-close"); throw new Error("RPC client is closed"); },
+      waitForInflightBrowserRoutes: async () => { order.push("routes-drained"); return true; },
+      removeTemporaryProfile: async () => { order.push("profile-removed"); return true; },
+    });
+    expect(order).toEqual(["browser-close", "playwright-disconnect", "stagehand-close", "routes-drained", "profile-removed"]);
+    expect(result.quiescenceVerified).toBe(true);
+    expect(result.profileRemoved).toBe(true);
+    expect(result.cleanupErrors).toContain("Stagehand client close failed: RPC client is closed");
+  });
+
   it("fences a delayed browser action before the independent ledger snapshot", async () => {
     let browserAlive = true;
     let committedEffects = 0;

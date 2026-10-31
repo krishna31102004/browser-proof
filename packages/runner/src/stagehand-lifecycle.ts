@@ -26,10 +26,11 @@ export interface StagehandReconciliationResult<T> {
 
 const DEFAULT_CLOSE_TIMEOUT_MS = 5_000;
 
-async function bounded<T>(operation: Promise<T>, timeoutMs: number): Promise<{ value?: T; error?: string; timedOut: boolean }> {
+async function bounded<T>(operation: () => Promise<T>, timeoutMs: number): Promise<{ value?: T; error?: string; timedOut: boolean }> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   // Attach both handlers immediately so a late rejection after the deadline is consumed.
-  const handled = operation.then(
+  // Defer invoking the callback so a synchronous throw is captured just like a rejected promise.
+  const handled = Promise.resolve().then(operation).then(
     (value) => ({ value, timedOut: false as const }),
     (error: unknown) => ({ error: error instanceof Error ? error.message : String(error), timedOut: false as const }),
   );
@@ -46,29 +47,29 @@ async function bounded<T>(operation: Promise<T>, timeoutMs: number): Promise<{ v
 export async function quiesceStagehandSession(dependencies: StagehandQuiescenceDependencies): Promise<StagehandQuiescenceResult> {
   const timeoutMs = dependencies.timeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
   const cleanupErrors: string[] = [];
-  const browserClose = await bounded(dependencies.closeOwnedBrowser(), timeoutMs);
+  const browserClose = await bounded(() => dependencies.closeOwnedBrowser(), timeoutMs);
   if (browserClose.error) cleanupErrors.push(`owned browser close failed: ${browserClose.error}`);
   if (browserClose.timedOut) cleanupErrors.push("owned browser close exceeded the bounded shutdown deadline");
 
-  const browserClosed = await bounded(dependencies.browserPortIsClosed(), timeoutMs);
+  const browserClosed = await bounded(() => dependencies.browserPortIsClosed(), timeoutMs);
   const browserFenced = browserClosed.value === true;
   if (!browserFenced) cleanupErrors.push(browserClosed.timedOut ? "browser port closure could not be established before deadline" : "owned browser port remains reachable");
 
   // Once the owning browser is fenced, disconnecting client handles cannot reopen it.
   for (const [label, operation] of [
-    ["Playwright disconnect", dependencies.disconnectPlaywright()],
-    ["Stagehand client close", dependencies.closeStagehandClient()],
+    ["Playwright disconnect", () => dependencies.disconnectPlaywright()],
+    ["Stagehand client close", () => dependencies.closeStagehandClient()],
   ] as const) {
     const closeResult = await bounded(operation, timeoutMs);
     if (closeResult.error) cleanupErrors.push(`${label} failed: ${closeResult.error}`);
     if (closeResult.timedOut) cleanupErrors.push(`${label} exceeded the bounded shutdown deadline`);
   }
 
-  const drained = await bounded(dependencies.waitForInflightBrowserRoutes(), timeoutMs);
+  const drained = await bounded(() => dependencies.waitForInflightBrowserRoutes(), timeoutMs);
   const routesDrained = drained.value === true;
   if (!routesDrained) cleanupErrors.push(drained.timedOut ? "in-flight browser routes did not quiesce before deadline" : "in-flight browser routes remain active");
 
-  const profile = await bounded(dependencies.removeTemporaryProfile(), timeoutMs);
+  const profile = await bounded(() => dependencies.removeTemporaryProfile(), timeoutMs);
   const profileRemoved = profile.value === true;
   if (!profileRemoved) cleanupErrors.push(profile.timedOut ? "temporary browser profile removal exceeded the bounded shutdown deadline" : "temporary browser profile removal failed");
 
