@@ -44,6 +44,7 @@ export interface AgentTaskOutcome {
   observation: string;
   taskCompleted: boolean;
   errorCode?: "aborted" | "deadline_exceeded" | "provider_error" | "malformed_model_response" | "action_limit";
+  providerFailure?: { category: string; httpStatus: number | null; sanitizedCause: string };
 }
 
 export interface AgentAdapter {

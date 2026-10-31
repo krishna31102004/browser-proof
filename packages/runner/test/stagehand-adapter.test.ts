@@ -11,6 +11,7 @@ import {
   StagehandAdapterFailure,
   StagehandConfigurationError,
   StagehandV4AgentAdapter,
+  diagnoseProviderFailure,
   sanitizeStagehandText,
   validateStagehandSpendConfiguration,
 } from "../src/stagehand-adapter.js";
@@ -121,22 +122,44 @@ describe("Stagehand v4 adapter mocked plumbing (not live provider proof)", () =>
   });
 
   it("sanitizes credential-like text, URLs, and control characters", () => {
-    const text = sanitizeStagehandText(`api_key=${MOCK_KEY} password=localpass https://example.test/private\nAuthorization: Bearer test`);
+    const text = sanitizeStagehandText(`api_key=${MOCK_KEY} password=localpass https://example.test/private\nAuthorization: Bearer test AIza012345678901234567890123456789`);
     expect(text).not.toContain(MOCK_KEY);
     expect(text).not.toContain("localpass");
     expect(text).not.toContain("Bearer test");
     expect(text).not.toContain("https://example.test");
+    expect(text).not.toContain("AIza012345678901234567890123456789");
     expect(text).not.toContain("\n");
   });
 
-  it("maps provider exceptions to a sanitized failure and never falls back to the reference agent", async () => {
-    const { adapter, input, emitted } = setup({ act: async () => { throw new Error(`provider rejected ${MOCK_KEY}`); } });
+  it("maps provider exceptions to allow-listed safe diagnostics and never falls back to the reference agent", async () => {
+    const providerError = Object.assign(new Error(`HTTP 429 quota exceeded x-goog-api-key: ${MOCK_KEY} contents={\"parts\":[{\"text\":\"private prompt payload\"}]} https://example.test/?key=${MOCK_KEY}`), { name: "APICallError", statusCode: 429, responseHeaders: { authorization: `Bearer ${MOCK_KEY}` } });
+    const { adapter, input, emitted } = setup({ act: async () => { throw providerError; } });
     const reference = vi.fn(async () => ({ attempts: 1, retries: 0, observation: "reference", taskCompleted: true }));
     const outcome = await adapter.runTask(input);
     expect(outcome.errorCode).toBe("provider_error");
+    expect(outcome.providerFailure).toMatchObject({ category: "quota_or_rate_limit", httpStatus: 429 });
     expect(outcome.observation).not.toContain(MOCK_KEY);
-    expect(emitted.at(-1)?.payload).toEqual({ adapterId: "stagehand-v4", code: "provider_error", attempts: 1 });
+    expect(emitted.at(-1)?.payload).toMatchObject({ adapterId: "stagehand-v4", code: "provider_error", attempts: 1, providerFailure: { category: "quota_or_rate_limit", httpStatus: 429 } });
+    const diagnostics = JSON.stringify(emitted.at(-1)?.payload);
+    expect(diagnostics).toContain("provider quota or rate limit");
+    expect(diagnostics).not.toContain(MOCK_KEY);
+    expect(diagnostics).not.toContain("private prompt payload");
+    expect(diagnostics).not.toContain("responseHeaders");
+    expect(diagnostics).not.toContain("example.test");
     expect(reference).not.toHaveBeenCalled();
+  });
+
+  it("classifies nested provider errors without retaining request material", () => {
+    expect(diagnoseProviderFailure(Object.assign(new Error("blocked"), { cause: Object.assign(new Error("bad key"), { status: 401 }) })))
+      .toMatchObject({ category: "authentication_or_access", httpStatus: 401 });
+    expect(diagnoseProviderFailure(Object.assign(new Error("model missing"), { statusCode: 404 })))
+      .toMatchObject({ category: "model_or_endpoint", httpStatus: 404 });
+    expect(diagnoseProviderFailure(new Error("ECONNRESET while fetching provider")))
+      .toMatchObject({ category: "transport", httpStatus: null });
+    const credentialNamedError = Object.assign(new Error("unrecognized provider failure"), { name: "AIza012345678901234567890123456789", statusCode: 400 });
+    const credentialNamedDiagnostic = JSON.stringify(diagnoseProviderFailure(credentialNamedError));
+    expect(credentialNamedDiagnostic).not.toContain("AIza012345678901234567890123456789");
+    expect(credentialNamedDiagnostic).toContain("ProviderError: provider request failed");
   });
 
   it("rejects malformed provider results rather than trusting partial fields", async () => {

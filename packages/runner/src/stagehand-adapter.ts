@@ -62,10 +62,19 @@ export interface StagehandV4AdapterOptions {
 }
 
 export class StagehandAdapterFailure extends Error {
-  constructor(readonly code: "aborted" | "deadline_exceeded" | "provider_error" | "malformed_model_response" | "action_limit") {
+  constructor(
+    readonly code: "aborted" | "deadline_exceeded" | "provider_error" | "malformed_model_response" | "action_limit",
+    readonly providerDiagnostic?: ProviderFailureDiagnostic,
+  ) {
     super(code);
     this.name = "StagehandAdapterFailure";
   }
+}
+
+export interface ProviderFailureDiagnostic {
+  category: "authentication_or_access" | "quota_or_rate_limit" | "model_or_endpoint" | "invalid_request" | "provider_service" | "transport" | "unclassified";
+  httpStatus: number | null;
+  sanitizedCause: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -84,11 +93,62 @@ function safeIdentifier(value: unknown): string | undefined {
 /** Keep only compact UI action details; never persist arbitrary provider text or arguments. */
 export function sanitizeStagehandText(value: string): string {
   return value
-    .replace(/\b(api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/\b(api[_-]?key|authorization|cookie|password|secret|token|x-goog-api-key)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [redacted]")
+    .replace(/\bAIza[A-Za-z0-9_-]{20,}\b/g, "[credential-redacted]")
     .replace(/\b(?:sk|key)-[A-Za-z0-9_-]{12,}\b/gi, "[credential-redacted]")
     .replace(/https?:\/\/[^\s)\]}>,;]+/gi, "[url-redacted]")
     .replace(/[\r\n\t]+/g, " ")
     .slice(0, 180);
+}
+
+function safeErrorRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined;
+}
+
+function providerHttpStatus(error: unknown): number | null {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current; depth += 1) {
+    const record = safeErrorRecord(current);
+    for (const field of ["statusCode", "status"] as const) {
+      const candidate = record?.[field];
+      if (typeof candidate === "number" && Number.isInteger(candidate) && candidate >= 100 && candidate <= 599) return candidate;
+    }
+    current = record?.cause;
+  }
+  return null;
+}
+
+function sanitizedProviderCause(error: unknown): string {
+  const record = safeErrorRecord(error);
+  const allowedNames = new Set(["Error", "TypeError", "AbortError", "TimeoutError", "APICallError", "GoogleGenerativeAIError", "GoogleGenerativeAIFetchError", "GoogleGenerativeAIResponseError", "FetchError"]);
+  const name = typeof record?.name === "string" && allowedNames.has(record.name) ? record.name : "ProviderError";
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "Provider request failed";
+  // Provider messages can echo request or response content; retain only known-safe cause phrases.
+  const safeCause =
+    /(?:api key not valid|invalid api key)/i.test(message) ? "provider credential rejected" :
+    /(?:permission denied|forbidden)/i.test(message) ? "provider access denied" :
+    /(?:quota exceeded|resource exhausted|rate limit)/i.test(message) ? "provider quota or rate limit" :
+    /(?:model.{0,30}not found|not found)/i.test(message) ? "model or endpoint not found" :
+    /(?:invalid argument|bad request)/i.test(message) ? "provider rejected invalid request" :
+    /(?:econnreset|econnrefused)/i.test(message) ? "provider connection failed" :
+    /(?:timed? ?out|deadline exceeded)/i.test(message) ? "provider request timed out" :
+    /fetch failed|network error/i.test(message) ? "provider network request failed" :
+    "provider request failed";
+  return `${name}: ${safeCause}`;
+}
+
+export function diagnoseProviderFailure(error: unknown): ProviderFailureDiagnostic {
+  const httpStatus = providerHttpStatus(error);
+  const category: ProviderFailureDiagnostic["category"] =
+    httpStatus === 401 || httpStatus === 403 ? "authentication_or_access" :
+    httpStatus === 429 ? "quota_or_rate_limit" :
+    httpStatus === 404 ? "model_or_endpoint" :
+    httpStatus !== null && httpStatus >= 400 && httpStatus < 500 ? "invalid_request" :
+    httpStatus !== null && httpStatus >= 500 ? "provider_service" :
+    /\b(fetch|socket|network|econn(?:reset|refused|timeout)?|enotfound|timed? ?out|connection)\b/i.test(error instanceof Error ? error.message : String(error)) ? "transport" :
+    "unclassified";
+  return { category, httpStatus, sanitizedCause: sanitizedProviderCause(error) };
 }
 
 function parseActResult(raw: unknown): ActResult {
@@ -145,9 +205,9 @@ async function executeWithDeadline<T>(promise: Promise<T>, input: AgentTaskInput
     promise.then((value) => {
       if (settled) { onLateResult(); return; }
       finish(() => resolve(value));
-    }, () => {
+    }, (error) => {
       if (settled) { onLateResult(); return; }
-      finish(() => reject(new StagehandAdapterFailure("provider_error")));
+      finish(() => reject(new StagehandAdapterFailure("provider_error", diagnoseProviderFailure(error))));
     });
   });
 }
@@ -213,7 +273,7 @@ export class StagehandV4AgentAdapter implements AgentAdapter {
           result = parseActResult(await executeWithDeadline(pending, input, timeout, () => { metrics.lateResultsDiscarded += 1; }));
         } catch (error) {
           if (error instanceof StagehandAdapterFailure) throw error;
-          throw new StagehandAdapterFailure("provider_error");
+          throw new StagehandAdapterFailure("provider_error", diagnoseProviderFailure(error));
         }
 
         const usage = resultMetrics(result);
@@ -259,8 +319,17 @@ export class StagehandV4AgentAdapter implements AgentAdapter {
     } catch (error) {
       const code = error instanceof StagehandAdapterFailure ? error.code : "provider_error";
       observation = `Stagehand adapter stopped: ${code}`;
-      try { await input.events.emit("agent.error", { adapterId: "stagehand-v4", code, attempts }, undefined); } catch { /* event sink failures do not expose provider data */ }
-      return { attempts, retries: Math.max(0, attempts - 1), observation, taskCompleted: false, errorCode: code };
+      const diagnostic = error instanceof StagehandAdapterFailure ? error.providerDiagnostic : undefined;
+      try {
+        await input.events.emit("agent.error", {
+          adapterId: "stagehand-v4", code, attempts,
+          ...(diagnostic ? { providerFailure: diagnostic } : {}),
+        }, undefined);
+      } catch { /* event sink failures do not expose provider data */ }
+      return {
+        attempts, retries: Math.max(0, attempts - 1), observation, taskCompleted: false, errorCode: code,
+        ...(diagnostic ? { providerFailure: diagnostic } : {}),
+      };
     }
   }
 }
