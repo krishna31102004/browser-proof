@@ -308,12 +308,16 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   if (reconciliation.observerError) errorMessage = sanitizeStagehandText(reconciliation.observerError);
   if (observerStatus === "complete") contract = evaluateRefundAtMostOnce(effects);
   if (!quiescence.quiescenceVerified || observerStatus !== "complete" || faultObserverInconclusive || traceErrors.length > 0) status = "observer_inconclusive";
-  else if (outcome.errorCode === "deadline_exceeded" || outcome.errorCode === "aborted") status = "timeout";
-  else if (contract && !contract.passed) status = "contract_violation";
-  else if (status === "browser_error" || status === "timeout") { /* preserve setup/timeout failure */ }
-  else if (outcome.errorCode || !outcome.taskCompleted || !contract?.passed || effects.length !== 1) status = "agent_error";
-  else if (fault && !faultTriggered) status = "injection_error";
-  else status = "passed";
+  else status = classifyStagehandExecutionStatus({
+    setupStatus: status,
+    attempts: outcome.attempts,
+    ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
+    taskCompleted: outcome.taskCompleted,
+    contractPassed: contract?.passed ?? null,
+    effectCount: effects.length,
+    faultArmed: Boolean(fault),
+    faultTriggered,
+  });
   if (eventWriteFailure) errorMessage = `Evidence event write failed: ${eventWriteFailure}`;
   if (app) { try { await app.close(); } catch (error) { quiescence.cleanupErrors.push(`controlled backend close failed: ${sanitizeStagehandText(error instanceof Error ? error.message : String(error))}`); } }
   await writeFile(join(artifactDir, "agent-metadata.json"), `${JSON.stringify(metadata, null, 2)}\n`);
@@ -337,6 +341,25 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   await writeFile(join(artifactDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   if (!sameBrowserProof) await writeFile(join(artifactDir, "same-browser.json"), `${JSON.stringify({ schemaVersion: 1, provenBeforeModelCall: false }, null, 2)}\n`);
   return { artifactDir, result, metadataPath: join(artifactDir, "agent-metadata.json"), sameBrowserPath: join(artifactDir, "same-browser.json"), terminal };
+}
+
+export function classifyStagehandExecutionStatus(input: {
+  setupStatus: RunResult["status"];
+  attempts: number;
+  errorCode?: string;
+  taskCompleted: boolean;
+  contractPassed: boolean | null;
+  effectCount: number;
+  faultArmed: boolean;
+  faultTriggered: boolean;
+}): RunResult["status"] {
+  if (input.setupStatus === "timeout" || input.errorCode === "deadline_exceeded" || input.errorCode === "aborted") return "timeout";
+  if (input.setupStatus === "browser_error" && input.attempts === 0) return "browser_error";
+  if (input.contractPassed === false) return "contract_violation";
+  if (input.errorCode === "provider_error" || input.errorCode === "malformed_model_response") return "browser_error";
+  if (input.errorCode || !input.taskCompleted || input.contractPassed !== true || input.effectCount !== 1) return "agent_error";
+  if (input.faultArmed && !input.faultTriggered) return "injection_error";
+  return "passed";
 }
 
 export function deriveStagehandTerminalEvidence(input: { status: RunResult["status"]; taskCompleted: boolean; faultTriggered: boolean; observerStatus: RunResult["observerStatus"]; contractPassed: boolean | null; quiescence: StagehandQuiescenceResult; cleanupErrors: string[]; artifactError: string | null; errorCode?: string }): StagehandTerminalEvidence {

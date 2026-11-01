@@ -68,7 +68,7 @@ describe("Stagehand timeout fencing and quiescence", () => {
     expect(result.cleanupErrors).toContain("temporary browser profile removal failed");
   });
 
-  it("captures synchronous Stagehand close errors and continues ledger-safe teardown", async () => {
+  it("treats the SDK's already-closed RPC as expected only after the owned browser is fenced", async () => {
     const order: string[] = [];
     const result = await quiesceStagehandSession({
       closeOwnedBrowser: async () => { order.push("browser-close"); },
@@ -81,7 +81,33 @@ describe("Stagehand timeout fencing and quiescence", () => {
     expect(order).toEqual(["browser-close", "playwright-disconnect", "stagehand-close", "routes-drained", "profile-removed"]);
     expect(result.quiescenceVerified).toBe(true);
     expect(result.profileRemoved).toBe(true);
+    expect(result.cleanupErrors).toEqual([]);
+  });
+
+  it("preserves the already-closed RPC failure when the browser fence was not established", async () => {
+    const result = await quiesceStagehandSession({
+      closeOwnedBrowser: async () => undefined,
+      browserPortIsClosed: async () => false,
+      disconnectPlaywright: async () => undefined,
+      closeStagehandClient: async () => { throw new Error("RPC client is closed"); },
+      waitForInflightBrowserRoutes: async () => true,
+      removeTemporaryProfile: async () => true,
+    });
+    expect(result.quiescenceVerified).toBe(false);
     expect(result.cleanupErrors).toContain("Stagehand client close failed: RPC client is closed");
+  });
+
+  it("continues to report unrelated Stagehand client cleanup failures after the browser fence", async () => {
+    const result = await quiesceStagehandSession({
+      closeOwnedBrowser: async () => undefined,
+      browserPortIsClosed: async () => true,
+      disconnectPlaywright: async () => undefined,
+      closeStagehandClient: async () => { throw new Error("unexpected SDK cleanup failure"); },
+      waitForInflightBrowserRoutes: async () => true,
+      removeTemporaryProfile: async () => true,
+    });
+    expect(result.quiescenceVerified).toBe(true);
+    expect(result.cleanupErrors).toContain("Stagehand client close failed: unexpected SDK cleanup failure");
   });
 
   it("fences a delayed browser action before the independent ledger snapshot", async () => {

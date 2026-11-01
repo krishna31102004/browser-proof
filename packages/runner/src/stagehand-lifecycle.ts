@@ -61,7 +61,8 @@ export async function quiesceStagehandSession(dependencies: StagehandQuiescenceD
     ["Stagehand client close", () => dependencies.closeStagehandClient()],
   ] as const) {
     const closeResult = await bounded(operation, timeoutMs);
-    if (closeResult.error) cleanupErrors.push(`${label} failed: ${closeResult.error}`);
+    const expectedRpcClosedAfterFence = label === "Stagehand client close" && browserFenced && closeResult.error === "RPC client is closed";
+    if (closeResult.error && !expectedRpcClosedAfterFence) cleanupErrors.push(`${label} failed: ${closeResult.error}`);
     if (closeResult.timedOut) cleanupErrors.push(`${label} exceeded the bounded shutdown deadline`);
   }
 

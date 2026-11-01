@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { evaluateRefundAtMostOnce, type RefundEffect } from "@browserproof/contracts";
 import { stagehandModelConfiguration } from "../src/stagehand-adapter.js";
 import { validateStagehandArtifacts } from "../src/stagehand-artifact-validation.js";
+import { stagehandSingleRunExitCode } from "../src/stagehand-cli-policy.js";
 import { executeStagehandSameBrowserSmoke } from "../src/stagehand-run.js";
 
 const TEST_CANARY = "sk-browserproof-private-test-canary-123456";
@@ -55,6 +56,56 @@ async function createMockedValidatorFixture(spikeArtifactDir: string, destinatio
 async function mutateJson(path: string, update: (value: JsonObject) => void): Promise<void> { const value = await readJson(path); update(value); await writeJson(path, value); }
 
 describe("Stagehand artifact validation (mocked evidence fixtures only; not live-model proof)", () => {
+  it("preserves a verifiable provider failure before any refund request without calling it successful acceptance", async () => {
+    const spike = await executeStagehandSameBrowserSmoke();
+    const temp = await mkdtemp(join(tmpdir(), "browserproof-stagehand-provider-failure-"));
+    const bundle = join(temp, "synthetic-provider-failure-fixture");
+    await createMockedValidatorFixture(String(spike.artifactDir), bundle);
+    try {
+      const result = await readJson(join(bundle, "result.json"));
+      const runId = result.runId;
+      result.mode = "clean"; result.status = "browser_error"; result.taskCompleted = false; result.observedEffects = []; result.contract = evaluateRefundAtMostOnce([]);
+      result.agent = { attempts: 1, retries: 0, observation: "provider failed before returning an action", error: "provider_error" };
+      result.fault = { type: null, armed: false, triggered: false, upstreamCommitted: false, browserReceivedSuccess: null };
+      await writeJson(join(bundle, "result.json"), result);
+      await writeJson(join(bundle, "schedule.json"), { schemaVersion: "1.0.0", mode: "clean", seed: "provider-error-before-request", faults: [] });
+      await writeJson(join(bundle, "effects.json"), { schemaVersion: "1.0.0", runId, observerStatus: "complete", effects: [] });
+      await mutateJson(join(bundle, "manifest.json"), (manifest) => { manifest.mode = "clean"; manifest.seed = "provider-error-before-request"; });
+      await mutateJson(join(bundle, "agent-metadata.json"), (metadata) => {
+        Object.assign(metadata, { stagehandActCalls: 1, liveInferenceCalls: 0, actionExecutions: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, inferenceTimeMs: 0, taskCompleted: false, errorCode: "provider_error", providerFailure: { category: "transport", httpStatus: null, sanitizedCause: "Error: provider request failed" } });
+      });
+      const eventPath = join(bundle, "events.jsonl");
+      const rows = (await readFile(eventPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as JsonObject)
+        .filter((event) => !["agent.model_action_result", "network.request", "network.upstream_response", "network.response_delivered", "network.request_failed", "backend.commit_confirmed", "fault.triggered"].includes(event.type));
+      rows.push({ eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", source: "agent", type: "agent.error", actionId: null, requestId: null, payload: { adapterId: "stagehand-v4", code: "provider_error", attempts: 1, providerFailure: { category: "transport", httpStatus: null, sanitizedCause: "Error: provider request failed" } } });
+      rows.forEach((event, index) => { event.sequence = index + 1; });
+      await writeFile(eventPath, rows.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      await writeFile(join(bundle, "model-actions.jsonl"), "");
+      await import("node:fs/promises").then(({ unlink }) => Promise.all([unlink(join(bundle, "screenshots/at-boundary.png")), unlink(join(bundle, "screenshots/after-agent.png"))]));
+      await writeJson(join(bundle, "terminal.json"), { executionStatus: "browser_error", taskCompleted: false, faultTriggered: false, observerStatus: "complete", contractPassed: true, terminalOutcome: "agent_error", exitReason: "provider_error", quiescenceVerified: true, cleanupErrors: [], artifactError: null });
+
+      const validation = await validateStagehandArtifacts(bundle);
+      expect(validation).toEqual({ valid: true, errors: [] });
+      expect(result.status).toBe("browser_error");
+      expect(result.taskCompleted).toBe(false);
+      expect(result.observedEffects).toEqual([]);
+      expect(await readJson(join(bundle, "agent-metadata.json"))).toMatchObject({ liveInferenceCalls: 0, errorCode: "provider_error" });
+      expect(stagehandSingleRunExitCode({ artifactValid: validation.valid, mode: "clean", executionStatus: "browser_error", taskCompleted: false, faultTriggered: false, observerStatus: "complete", contractPassed: true, terminalOutcome: "agent_error", expectedViolationAsserted: false, quiescenceVerified: true, cleanupErrors: [] })).toBe(1);
+      const missingMetadataDiagnostic = join(temp, "missing-provider-diagnostic");
+      await cp(bundle, missingMetadataDiagnostic, { recursive: true });
+      await mutateJson(join(missingMetadataDiagnostic, "agent-metadata.json"), (metadata) => { delete metadata.providerFailure; });
+      expect((await validateStagehandArtifacts(missingMetadataDiagnostic)).valid).toBe(false);
+      const mismatchedEventDiagnostic = join(temp, "mismatched-provider-diagnostic");
+      await cp(bundle, mismatchedEventDiagnostic, { recursive: true });
+      const mismatchedEventPath = join(mismatchedEventDiagnostic, "events.jsonl");
+      const mismatchedEvents = (await readFile(mismatchedEventPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as JsonObject);
+      const errorEvent = mismatchedEvents.find((event) => event.type === "agent.error")!;
+      errorEvent.payload.providerFailure.sanitizedCause = "TypeError: provider network request failed";
+      await writeFile(mismatchedEventPath, mismatchedEvents.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      expect((await validateStagehandArtifacts(mismatchedEventDiagnostic)).valid).toBe(false);
+    } finally { await rm(temp, { recursive: true, force: true }); }
+  }, 60_000);
+
   it("accepts a structurally valid but untriggered failed run without treating it as success", async () => {
     const spike = await executeStagehandSameBrowserSmoke();
     const temp = await mkdtemp(join(tmpdir(), "browserproof-stagehand-untriggered-"));

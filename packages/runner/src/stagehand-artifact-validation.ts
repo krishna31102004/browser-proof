@@ -16,6 +16,13 @@ async function readObject(path: string): Promise<ObjectValue> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`Expected an object at ${path}`);
   return value as ObjectValue;
 }
+async function readOptionalFile(path: string): Promise<Buffer | undefined> {
+  try { return await readFile(path); }
+  catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
 
 export interface StagehandArtifactValidation { valid: boolean; errors: string[]; }
 
@@ -35,7 +42,7 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
       readObject(resolve(artifactDir, "manifest.json")), readObject(resolve(artifactDir, "scenario.json")), readObject(resolve(artifactDir, "schedule.json")),
       readObject(resolve(artifactDir, "result.json")), readObject(resolve(artifactDir, "effects.json")), readObject(resolve(artifactDir, "agent-metadata.json")),
       readObject(resolve(artifactDir, "same-browser.json")), readObject(resolve(artifactDir, "terminal.json")), readFile(resolve(artifactDir, "events.jsonl"), "utf8"), readFile(resolve(artifactDir, "model-actions.jsonl"), "utf8"),
-      readFile(resolve(artifactDir, "trace.zip")), readFile(resolve(artifactDir, "screenshots/before-agent.png")), readFile(resolve(artifactDir, "screenshots/at-boundary.png")), readFile(resolve(artifactDir, "screenshots/after-agent.png")),
+      readFile(resolve(artifactDir, "trace.zip")), readFile(resolve(artifactDir, "screenshots/before-agent.png")), readOptionalFile(resolve(artifactDir, "screenshots/at-boundary.png")), readOptionalFile(resolve(artifactDir, "screenshots/after-agent.png")),
     ]);
     const runId = result.runId;
     if (typeof runId !== "string" || manifest.runId !== runId || effects.runId !== runId) errors.push("run ID does not match across required artifacts");
@@ -71,7 +78,17 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
     const actionRows = actionText.trim() ? actionText.trim().split("\n").map((line) => JSON.parse(line) as { actionId?: string; payload?: ObjectValue }) : [];
     const resultRows = events.filter((event) => event.type === "agent.model_action_result");
     const proposalRows = events.filter((event) => event.type === "agent.action_proposed");
-    if (Number(metadata.stagehandActCalls) !== proposalRows.length || Number(metadata.stagehandActCalls) !== resultRows.length || Number(metadata.stagehandActCalls) > STAGEHAND_MAX_ACTIONS || Number(metadata.liveInferenceCalls) < 0 || Number(metadata.liveInferenceCalls) > Number(metadata.stagehandActCalls) || actionRows.length !== resultRows.length) errors.push("provider call/action evidence counts are inconsistent or exceed the six-act budget");
+    const requestRows = events.filter((event) => event.type === "network.request");
+    const providerFailureBeforeActionResult = result.status === "browser_error" && result.agent && (result.agent as ObjectValue).error === "provider_error" && metadata.errorCode === "provider_error" && result.taskCompleted === false && resultRows.length === 0 && requestRows.length === 0 && Array.isArray(result.observedEffects) && result.observedEffects.length === 0 && metadata.liveInferenceCalls === 0;
+    const missingResultCount = proposalRows.length - resultRows.length;
+    if (Number(metadata.stagehandActCalls) !== proposalRows.length || (missingResultCount !== 0 && !(providerFailureBeforeActionResult && missingResultCount === 1)) || Number(metadata.stagehandActCalls) > STAGEHAND_MAX_ACTIONS || Number(metadata.liveInferenceCalls) < 0 || Number(metadata.liveInferenceCalls) > Number(metadata.stagehandActCalls) || actionRows.length !== resultRows.length) errors.push("provider call/action evidence counts are inconsistent or exceed the six-act budget");
+    if (providerFailureBeforeActionResult) {
+      const failureEvent = events.find((event) => event.type === "agent.error" && event.payload.code === "provider_error");
+      const diagnostic = metadata.providerFailure;
+      const allowedCategories = ["authentication_or_access", "quota_or_rate_limit", "model_or_endpoint", "invalid_request", "provider_service", "transport", "unclassified"];
+      const safeCause = /^(?:Error|TypeError|AbortError|TimeoutError|APICallError|GoogleGenerativeAIError|GoogleGenerativeAIFetchError|GoogleGenerativeAIResponseError|FetchError|ProviderError): (?:provider credential rejected|provider access denied|provider quota or rate limit|model or endpoint not found|provider rejected invalid request|provider connection failed|provider request timed out|provider network request failed|provider request failed)$/;
+      if (!isRecord(diagnostic) || !allowedCategories.includes(String(diagnostic.category)) || !(diagnostic.httpStatus === null || (typeof diagnostic.httpStatus === "number" && Number.isInteger(diagnostic.httpStatus) && diagnostic.httpStatus >= 100 && diagnostic.httpStatus <= 599)) || typeof diagnostic.sanitizedCause !== "string" || !safeCause.test(diagnostic.sanitizedCause) || !failureEvent || JSON.stringify(failureEvent.payload.providerFailure) !== JSON.stringify(diagnostic) || failureEvent.payload.attempts !== metadata.stagehandActCalls) errors.push("pre-request provider failure is missing matching sanitized diagnostics in metadata and agent events");
+    }
     if (actionRows.some((row, index) => row.actionId !== resultRows[index]?.actionId || JSON.stringify(row.payload) !== JSON.stringify(resultRows[index]?.payload))) errors.push("model-actions rows differ from ordered event evidence");
     const returnedActions = actionRows.flatMap((row) => Array.isArray(row.payload?.actions) ? row.payload.actions as ObjectValue[] : []);
     if (returnedActions.length > STAGEHAND_MAX_ACTIONS || Number(metadata.actionExecutions) !== returnedActions.length || returnedActions.some((action) => typeof action.selector !== "string" || !action.selector || typeof action.targetDescription !== "string" || !/(refund|order)/i.test(action.targetDescription))) errors.push("returned Stagehand actions are malformed, action counts disagree, or the six-action ceiling was exceeded");
@@ -105,6 +122,8 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
       }
       const expectedStatus = result.observerStatus !== "complete"
         ? "observer_inconclusive"
+        : providerFailureBeforeActionResult
+          ? "browser_error"
         : contract && contract.passed === false
           ? "contract_violation"
           : result.mode === "faulted" && (result.fault as ObjectValue | undefined)?.triggered === false && result.status === "injection_error"
@@ -115,7 +134,10 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
       if (result.observerStatus !== "complete" || metadata.taskCompleted !== result.taskCompleted || result.status !== expectedStatus || result.observerStatus !== effects.observerStatus || !isRecord(result.agent) || result.agent.attempts !== metadata.stagehandActCalls) errors.push("saved task completion/status disagrees with model metadata, effects, or contract");
     }
     if (typeof metadata.liveInferenceCalls !== "number" || metadata.liveInferenceCalls < 0 || metadata.liveInferenceCalls !== actionRows.filter((row) => row.payload?.cacheStatus !== "HIT" && Number((row.payload?.usage as ObjectValue | undefined)?.inputTokens ?? 0) + Number((row.payload?.usage as ObjectValue | undefined)?.outputTokens ?? 0) > 0).length) errors.push("live provider inference count is not supported by SDK usage evidence");
-    if (trace.subarray(0, 2).toString() !== "PK" || before.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a" || boundary.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a" || after.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") errors.push("trace or screenshot signature invalid");
+    const hasRefundRequest = requestRows.some((event) => typeof event.payload.url === "string" && new URL(event.payload.url).pathname === "/api/orders/A123/refund");
+    const requiresBoundaryScreenshot = hasRefundRequest || triggerEvents.length > 0;
+    const requiresAfterScreenshot = resultRows.length > 0 || hasRefundRequest || result.taskCompleted === true;
+    if (trace.subarray(0, 2).toString() !== "PK" || before.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a" || (requiresBoundaryScreenshot && boundary?.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") || (requiresAfterScreenshot && after?.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a")) errors.push("trace or required screenshot signature invalid");
     execFileSync("unzip", ["-t", resolve(artifactDir, "trace.zip")], { stdio: "ignore" });
     const bundleText = JSON.stringify({ manifest, scenario, schedule, result, effects, metadata, proof, events, actionRows });
     if (forbiddenSecrets.some((secret) => secret.length > 0 && bundleText.includes(secret))) errors.push("private credential canary appears in evidence");
