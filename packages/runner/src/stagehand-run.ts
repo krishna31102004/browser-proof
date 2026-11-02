@@ -11,6 +11,7 @@ import { EventWriter } from "./event-writer.js";
 import { validateStagehandSavedSchedule } from "./stagehand-artifact-validation.js";
 import { APPROVED_GEMINI_STAGEHAND_MODELS, StagehandV4AgentAdapter, STAGEHAND_ACT_ADAPTER_DEADLINE_MS, STAGEHAND_MAX_ACTIONS, STAGEHAND_SDK_VERSION, sanitizeStagehandText, stagehandModelConfiguration, validateStagehandSpendConfiguration, type ApprovedGeminiStagehandModel, type ApprovedStagehandModel } from "./stagehand-adapter.js";
 import { createStagehandGeminiCallback, type GeminiCallbackMetrics } from "./stagehand-gemini-callback.js";
+import type { StagehandCampaignRequestPacer } from "./stagehand-campaign-pacer.js";
 import { isAllowedNativeGeminiWorkerRequest, type StagehandInferenceTransport } from "./stagehand-network-policy.js";
 import type { AgentEventEmitter, AgentTaskOutcome } from "./agent-adapter.js";
 import { queryEffects, isFaultTargetMatch } from "./run.js";
@@ -37,6 +38,7 @@ export interface StagehandRunOptions {
   providerApiKey: string;
   allowFreeTierGemini: boolean;
   inferenceTransport?: StagehandInferenceTransport;
+  campaignPacer?: StagehandCampaignRequestPacer;
   artifactRoot?: string;
   schedule?: FaultSchedule;
   maxActions?: number;
@@ -189,6 +191,7 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
       geminiCallback = createStagehandGeminiCallback({
         apiKey: options.providerApiKey,
         model: model as ApprovedGeminiStagehandModel,
+        ...(options.campaignPacer ? { campaignPacer: options.campaignPacer } : {}),
         onEvent: async (type, payload, correlation) => { await recordEvent("agent", type, payload, correlation); },
       });
       stagehand = await Stagehand.create({ browser: stagehandBrowser, model: geminiCallback.clientLLM, logging: { level: "off" } });

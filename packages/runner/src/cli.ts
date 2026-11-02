@@ -1,5 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { ARTIFACT_SCHEMA_VERSION, validateFaultSchedule, type AdminBenchFaultSchedule, type FaultSchedule, type RunMode, type RunResult } from "@browserproof/contracts";
@@ -17,6 +17,8 @@ import { APPROVED_GEMINI_STAGEHAND_MODELS, STAGEHAND_SDK_VERSION, validateStageh
 import { executeStagehandRun, executeStagehandSameBrowserSmoke, stagehandPreflight, type StagehandRunSummary } from "./stagehand-run.js";
 import { validateStagehandArtifacts, validateStagehandSavedSchedule, validateStagehandSpikeArtifacts } from "./stagehand-artifact-validation.js";
 import { validateStagehandCampaignSchedules } from "./stagehand-campaign-schedules.js";
+import { validateGemini36ResumeReport } from "./stagehand-campaign-resume.js";
+import { StagehandCampaignRequestPacer } from "./stagehand-campaign-pacer.js";
 import { registerUniqueStagehandCampaignRunId, stagehandCampaignTrialFailure, stagehandSingleRunExitCode } from "./stagehand-cli-policy.js";
 import type { StagehandInferenceTransport } from "./stagehand-network-policy.js";
 
@@ -162,38 +164,61 @@ async function auditStagehandCampaignTrial(run: StagehandRunSummary, expectedMod
 }
 
 async function verifyStagehandCampaign(): Promise<number> {
-  validateStagehandFlags(new Set(["--scenario", "--allow-free-tier-gemini", "--model", "--inference-transport", "--max-model-runs", "--pilot-artifact"]), process.argv.slice(3));
-  if (argument("--scenario") !== "stagehand-smoke") throw new Error("Usage: pnpm bp verify --scenario stagehand-smoke --allow-free-tier-gemini --max-model-runs 9 --model <google/gemini-3.8-flash|google/gemini-3.6-flash> --inference-transport client-callback --pilot-artifact <validated-clean-pilot-dir>");
+  validateStagehandFlags(new Set(["--scenario", "--allow-free-tier-gemini", "--model", "--inference-transport", "--max-model-runs", "--pilot-artifact", "--resume-report"]), process.argv.slice(3));
+  if (argument("--scenario") !== "stagehand-smoke") throw new Error("Usage: pnpm bp verify --scenario stagehand-smoke --allow-free-tier-gemini --max-model-runs 9 --model google/gemini-3.6-flash --inference-transport client-callback (--resume-report <partial-report> | --pilot-artifact <validated-clean-pilot-dir>)");
   const maximum = Number(argument("--max-model-runs"));
   if (maximum !== 9) throw new Error("Stagehand acceptance campaign requires an explicit maximum of exactly 9 model-backed runs (3 clean + 3 faulted + 3 fresh replays)");
   const config = stagehandRunConfiguration();
-  const pilotDir = argument("--pilot-artifact");
-  if (!pilotDir) throw new Error("Run and inspect one successful clean Gemini pilot first, then pass its artifact directory with --pilot-artifact");
-  const pilotValidation = await validateStagehandArtifacts(pilotDir, [config.key]);
-  const pilotResult = await readJson(resolve(pilotDir, "result.json"));
-  const pilotMetadata = await readJson(resolve(pilotDir, "agent-metadata.json"));
-  const pilotTerminal = await readJson(resolve(pilotDir, "terminal.json"));
-  const pilot: StagehandRunSummary = { artifactDir: pilotDir, result: pilotResult as unknown as RunResult, metadataPath: resolve(pilotDir, "agent-metadata.json"), sameBrowserPath: resolve(pilotDir, "same-browser.json"), terminal: pilotTerminal as unknown as StagehandRunSummary["terminal"] };
-  const pilotFailure = await auditStagehandCampaignTrial(pilot, "clean", config.key, config.model, config.inferenceTransport);
-  if (!pilotValidation.valid || pilotFailure) {
-    console.log(JSON.stringify({ pilotAccepted: false, artifactValid: pilotValidation.valid, pilotFailure: pilotFailure ?? null, validationErrors: pilotValidation.errors, runId: pilotResult.runId ?? null, status: pilotResult.status ?? null, taskCompleted: pilotResult.taskCompleted ?? null, observerStatus: pilotResult.observerStatus ?? null, trueModelProof: stagehandLiveProof(pilotMetadata, config.model, config.inferenceTransport), artifactDir: pilotDir }, null, 2));
-    return 1;
+  const resumeReportPath = argument("--resume-report");
+  const acceptedCleanRuns = [] as Awaited<ReturnType<typeof executeStagehandRun>>[];
+  if (resumeReportPath) {
+    if (config.model !== "google/gemini-3.6-flash" || config.inferenceTransport !== "stagehand_client_callback_google") throw new Error("--resume-report is currently restricted to the validated Gemini 3.6 client-callback campaign");
+    const resumeReport = await readJson(resolve(resumeReportPath));
+    const resumePaths = validateGemini36ResumeReport(resumeReport);
+    if (!resumePaths) throw new Error("Resume report does not contain the exact three accepted Gemini 3.6 clean runs");
+    for (const artifactPath of resumePaths) {
+      const artifactDir = resolve(artifactPath);
+      const validation = await validateStagehandArtifacts(artifactDir, [config.key]);
+      const result = await readJson(resolve(artifactDir, "result.json"));
+      const metadata = await readJson(resolve(artifactDir, "agent-metadata.json"));
+      const terminal = await readJson(resolve(artifactDir, "terminal.json"));
+      const run: StagehandRunSummary = { artifactDir, result: result as unknown as RunResult, metadataPath: resolve(artifactDir, "agent-metadata.json"), sameBrowserPath: resolve(artifactDir, "same-browser.json"), terminal: terminal as unknown as StagehandRunSummary["terminal"] };
+      if (result.runId !== basename(artifactDir)) throw new Error(`Resume artifact directory and result run ID disagree: ${artifactDir}`);
+      const failure = await auditStagehandCampaignTrial(run, "clean", config.key, config.model, config.inferenceTransport);
+      if (!validation.valid || failure || !stagehandLiveProof(metadata, config.model, config.inferenceTransport)) throw new Error(`Resume clean artifact failed full verification: ${artifactDir}; ${failure ?? validation.errors.join("; ")}`);
+      acceptedCleanRuns.push(run);
+    }
+  } else {
+    const pilotDir = argument("--pilot-artifact");
+    if (!pilotDir) throw new Error("Pass a successful clean pilot with --pilot-artifact or resume three accepted clean runs using --resume-report");
+    const pilotValidation = await validateStagehandArtifacts(pilotDir, [config.key]);
+    const pilotResult = await readJson(resolve(pilotDir, "result.json"));
+    const pilotMetadata = await readJson(resolve(pilotDir, "agent-metadata.json"));
+    const pilotTerminal = await readJson(resolve(pilotDir, "terminal.json"));
+    const pilot: StagehandRunSummary = { artifactDir: pilotDir, result: pilotResult as unknown as RunResult, metadataPath: resolve(pilotDir, "agent-metadata.json"), sameBrowserPath: resolve(pilotDir, "same-browser.json"), terminal: pilotTerminal as unknown as StagehandRunSummary["terminal"] };
+    const pilotFailure = await auditStagehandCampaignTrial(pilot, "clean", config.key, config.model, config.inferenceTransport);
+    if (!pilotValidation.valid || pilotFailure) {
+      console.log(JSON.stringify({ pilotAccepted: false, artifactValid: pilotValidation.valid, pilotFailure: pilotFailure ?? null, validationErrors: pilotValidation.errors, runId: pilotResult.runId ?? null, status: pilotResult.status ?? null, taskCompleted: pilotResult.taskCompleted ?? null, observerStatus: pilotResult.observerStatus ?? null, trueModelProof: stagehandLiveProof(pilotMetadata, config.model, config.inferenceTransport), artifactDir: pilotDir }, null, 2));
+      return 1;
+    }
+    acceptedCleanRuns.push(pilot as unknown as Awaited<ReturnType<typeof executeStagehandRun>>);
   }
-  const cleanRuns = [pilot] as Awaited<ReturnType<typeof executeStagehandRun>>[];
+  const cleanRuns = acceptedCleanRuns;
   const faultedRuns = [] as Awaited<ReturnType<typeof executeStagehandRun>>[];
   const reproductionRuns = [] as Awaited<ReturnType<typeof executeStagehandRun>>[];
-  const campaignRunIds = new Set<string>([pilot.result.runId]);
+  const campaignPacer = new StagehandCampaignRequestPacer(20_000);
+  const campaignRunIds = new Set<string>(cleanRuns.map(({ result }) => result.runId));
   const auditNextCampaignTrial = async (run: StagehandRunSummary, expectedMode: RunMode) => {
     if (!registerUniqueStagehandCampaignRunId(run.result.runId, campaignRunIds)) return "duplicate_run_id";
     return await auditStagehandCampaignTrial(run, expectedMode, config.key, config.model, config.inferenceTransport);
   };
   let stopReason: string | undefined;
-  for (let index = 2; index <= 3 && !stopReason; index += 1) {
-    const run = await executeStagehandRun({ mode: "clean", seed: `stagehand-clean-${index}`, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport });
+  for (let index = 2; !resumeReportPath && index <= 3 && !stopReason; index += 1) {
+    const run = await executeStagehandRun({ mode: "clean", seed: `stagehand-clean-${index}`, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport, campaignPacer });
     cleanRuns.push(run); const failure = await auditNextCampaignTrial(run, "clean"); if (failure) stopReason = `clean_${failure}`;
   }
   for (let index = 1; index <= 3 && !stopReason; index += 1) {
-    const run = await executeStagehandRun({ mode: "faulted", seed: `stagehand-faulted-${index}`, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport });
+    const run = await executeStagehandRun({ mode: "faulted", seed: `stagehand-faulted-${index}`, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport, campaignPacer });
     faultedRuns.push(run); const failure = await auditNextCampaignTrial(run, "faulted"); if (failure) stopReason = `faulted_${failure}`;
   }
   if (stopReason) {
@@ -212,7 +237,7 @@ async function verifyStagehandCampaign(): Promise<number> {
   for (let index = 1; index <= 3 && !stopReason; index += 1) {
     const sourceSchedule = sourceSchedules[index - 1] as { seed: string; faults: FaultSchedule[] };
     const savedSchedule = sourceSchedule.faults[0]!;
-    const run = await executeStagehandRun({ mode: "faulted", seed: sourceSchedule.seed, schedule: savedSchedule, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport });
+    const run = await executeStagehandRun({ mode: "faulted", seed: sourceSchedule.seed, schedule: savedSchedule, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport, campaignPacer });
     reproductionRuns.push(run); const failure = await auditNextCampaignTrial(run, "faulted"); if (failure) stopReason = `reproduction_${failure}`;
   }
   const all = [...cleanRuns, ...faultedRuns, ...reproductionRuns];

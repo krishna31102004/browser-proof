@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ClientLLM } from "@browserbasehq/stagehand";
 import type { ApprovedGeminiStagehandModel, ProviderFailureDiagnostic } from "./stagehand-adapter.js";
+import type { StagehandCampaignRequestPacer } from "./stagehand-campaign-pacer.js";
 
 export const STAGEHAND_GEMINI_CLIENT_MODEL = "google/gemini-3.8-flash" as const;
 export const STAGEHAND_GEMINI_CLIENT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
@@ -12,6 +13,7 @@ export const STAGEHAND_GEMINI_CALLBACK_TIMEOUT_MS = 80_000;
 export const STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT = 6;
 export const STAGEHAND_GEMINI_MAX_OUTPUT_TOKENS = 1_024;
 export const STAGEHAND_GEMINI_MAX_503_RETRIES = 2;
+const STAGEHAND_GEMINI_MAX_RETRY_AFTER_MS = 30_000;
 
 export type StagehandLLMGenerateParams = Parameters<ClientLLM["generate"]>[0];
 export type StagehandLLMGenerateResult = Awaited<ReturnType<ClientLLM["generate"]>>;
@@ -62,6 +64,7 @@ export interface GeminiCallbackOptions {
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   retrySleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+  campaignPacer?: StagehandCampaignRequestPacer;
   randomImpl?: () => number;
   requestLimit?: number;
   timeoutMs?: number;
@@ -130,6 +133,14 @@ function abortableSleep(delayMs: number, signal: AbortSignal): Promise<void> {
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+function retryAfterDelayMs(value: string | null, now = Date.now()): number | undefined {
+  if (value === null) return undefined;
+  const seconds = Number(value.trim());
+  const delay = Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds * 1_000) : Date.parse(value) - now;
+  if (!Number.isFinite(delay) || delay < 0 || delay > STAGEHAND_GEMINI_MAX_RETRY_AFTER_MS) return undefined;
+  return delay;
 }
 
 const ANNOTATION_KEYS = new Set(["$schema", "$id", "$anchor", "$comment", "title", "description", "default", "examples", "deprecated", "readOnly", "writeOnly"]);
@@ -321,10 +332,12 @@ export function createStagehandGeminiCallback(options: GeminiCallbackOptions): S
       const entry: GeminiCallbackRequestEvidence = { requestId, actionId: requestActionId ?? null, status: "started", httpStatus: null, latencyMs: 0 };
       records.push(entry);
       const correlation = { requestId, ...(requestActionId ? { actionId: requestActionId } : {}) };
+      let retryAfterHeader: string | null = null;
       await options.onEvent?.("provider.inference_started", { transport: metrics.transport, provider: metrics.provider, model: metrics.model, endpoint, attempt: metrics.requestCount, retryIndex }, correlation);
       try {
         let response: Response;
         try {
+          await options.campaignPacer?.waitTurn(controller.signal);
           response = await fetchImpl(endpoint, {
             method: "POST",
             headers: { "content-type": "application/json", "x-goog-api-key": options.apiKey },
@@ -339,6 +352,7 @@ export function createStagehandGeminiCallback(options: GeminiCallbackOptions): S
           throw new StagehandGeminiCallbackError(aborted ? "aborted" : "provider_error", diagnostic);
         }
         entry.httpStatus = response.status;
+        retryAfterHeader = response.headers.get("retry-after");
         if (!response.ok) throw new StagehandGeminiCallbackError("provider_error", safeHttpDiagnostic(response.status));
         let responseBody: unknown;
         try { responseBody = await response.json() as unknown; }
@@ -370,7 +384,9 @@ export function createStagehandGeminiCallback(options: GeminiCallbackOptions): S
         if (mayRetry503) {
           const baseDelayMs = 250 * (2 ** retryIndex);
           const jitterMs = Math.floor(randomImpl() * (baseDelayMs * 0.25));
-          try { await retrySleep(baseDelayMs + jitterMs, signal); }
+          const retryAfterMs = retryAfterDelayMs(retryAfterHeader);
+          if (retryAfterHeader !== null && retryAfterMs === undefined) throw callbackError;
+          try { await retrySleep(Math.max(baseDelayMs + jitterMs, retryAfterMs ?? 0), signal); }
           catch { throw new StagehandGeminiCallbackError("aborted", providerDiagnostic(null, "transport", "inference cancelled")); }
           continue;
         }

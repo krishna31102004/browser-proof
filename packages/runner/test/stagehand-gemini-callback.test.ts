@@ -158,6 +158,19 @@ describe("Stagehand 4.3.0 Gemini client callback (offline only)", () => {
     expect(events.every((event) => event.correlation.actionId === "retry-action")).toBe(true);
   });
 
+  it("honors a bounded Retry-After on HTTP 503 and refuses an unsafe value", async () => {
+    const delays: number[] = [];
+    const replies = [new Response("{}", { status: 503, headers: { "retry-after": "2" } }), providerResponse()];
+    const callback = createStagehandGeminiCallback({ apiKey: TEST_KEY, fetchImpl: vi.fn(async () => replies.shift()!), randomImpl: () => 0, retrySleep: async (ms) => { delays.push(ms); } });
+    await callback.clientLLM.generate(params);
+    expect(delays).toEqual([2_000]);
+
+    const noRetryFetch = vi.fn(async () => new Response("{}", { status: 503, headers: { "retry-after": "60" } }));
+    const noRetry = createStagehandGeminiCallback({ apiKey: TEST_KEY, fetchImpl: noRetryFetch, randomImpl: () => 0, retrySleep: async () => undefined });
+    await expect(noRetry.clientLLM.generate(params)).rejects.toMatchObject({ code: "provider_error", diagnostic: { httpStatus: 503 } });
+    expect(noRetryFetch).toHaveBeenCalledTimes(1);
+  });
+
   it("exhausts at most two HTTP 503 retries and fails closed with three separately recorded failures", async () => {
     const delays: number[] = [];
     const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
