@@ -160,7 +160,7 @@ describe("Stagehand artifact validation (mocked evidence fixtures only; not live
       result.taskCompleted = false;
       result.observedEffects = [];
       result.contract = evaluateRefundAtMostOnce([]);
-      result.agent = { attempts: 1, retries: 0, observation: "callback returned usage, then Stagehand act failed before an action result", error: "provider_error" };
+      result.agent = { attempts: 2, retries: 1, observation: "the first act returned; a second callback returned usage, then Stagehand act failed before its action result", error: "provider_error" };
       result.fault = { type: null, armed: false, triggered: false, upstreamCommitted: false, browserReceivedSuccess: null };
       await writeJson(join(bundle, "result.json"), result);
       await writeJson(join(bundle, "schedule.json"), { schemaVersion: "1.0.0", mode: "clean", seed: "callback-response-stagehand-error", faults: [] });
@@ -168,9 +168,14 @@ describe("Stagehand artifact validation (mocked evidence fixtures only; not live
       await mutateJson(join(bundle, "manifest.json"), (manifest) => { manifest.mode = "clean"; manifest.seed = "callback-response-stagehand-error"; });
       const eventPath = join(bundle, "events.jsonl");
       const existing = (await readFile(eventPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as JsonObject);
-      const retained = existing.filter((event) => ["agent.page_target_proven", "agent.action_proposed"].includes(event.type));
-      const actionId = retained.find((event) => event.type === "agent.action_proposed")?.actionId as string | undefined;
-      if (!actionId) throw new Error("callback failure fixture is missing its action proposal");
+      const targetProof = existing.find((event) => event.type === "agent.page_target_proven");
+      const firstProposal = existing.find((event) => event.type === "agent.action_proposed");
+      const firstActionRow = JSON.parse((await readFile(join(bundle, "model-actions.jsonl"), "utf8")).trim()) as JsonObject;
+      const firstActionId = firstProposal?.actionId as string | undefined;
+      const secondActionId = `stagehand-second-action-${randomUUID()}`;
+      if (!targetProof || !firstProposal || !firstActionId) throw new Error("callback failure fixture is missing target or first action proof");
+      const secondProposal: JsonObject = { ...firstProposal, eventId: randomUUID(), actionId: secondActionId, sequence: 0, payload: { ...firstProposal.payload, call: 2 } };
+      const firstActionResult = { eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", sequence: 0, timestamp: new Date().toISOString(), monotonicMs: 25, source: "agent", type: "agent.model_action_result", actionId: firstActionId, payload: firstActionRow.payload };
       const callbackEvents: JsonObject[] = [];
       const callback = createStagehandGeminiCallback({
         apiKey: TEST_CANARY,
@@ -180,29 +185,31 @@ describe("Stagehand artifact validation (mocked evidence fixtures only; not live
         }), { status: 200, headers: { "content-type": "application/json" } }),
         onEvent: (type, payload, correlation) => { callbackEvents.push({ eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", sequence: 0, timestamp: new Date().toISOString(), monotonicMs: callbackEvents.length + 10, source: "agent", type, ...correlation, payload }); },
       });
-      callback.setActionContext(actionId);
+      callback.setActionContext(firstActionId);
       const params: StagehandLLMGenerateParams = {
         messages: [{ role: "user", content: { type: "text", text: "offline structured action schema" } }],
         responseFormat: { type: "json_schema", name: "OfflineAction", schema: { type: "object", required: ["ok"], additionalProperties: false, properties: { ok: { type: "boolean" } } } },
       };
       await callback.clientLLM.generate(params);
+      callback.setActionContext(secondActionId);
+      await callback.clientLLM.generate(params);
       const callbackSnapshot = callback.snapshot();
-      expect(callbackSnapshot).toMatchObject({ requestCount: 1, successfulResponses: 1, failedResponses: 0, usageMetadataResponses: 1, providerObservedUsage: { promptTokenCount: 17, candidatesTokenCount: 5, totalTokenCount: 22, thoughtsTokenCount: 3 } });
+      expect(callbackSnapshot).toMatchObject({ requestCount: 2, successfulResponses: 2, failedResponses: 0, usageMetadataResponses: 2, providerObservedUsage: { promptTokenCount: 34, candidatesTokenCount: 10, totalTokenCount: 44, thoughtsTokenCount: 6 } });
       const diagnostic = { category: "unclassified", httpStatus: null, sanitizedCause: "Error: provider request failed" };
       await mutateJson(join(bundle, "agent-metadata.json"), (metadata) => {
         Object.assign(metadata, {
-          inferenceTransport: "stagehand_client_callback_google", stagehandActCalls: 1, liveInferenceCalls: 1,
-          actionExecutions: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, inferenceTimeMs: 0,
+          inferenceTransport: "stagehand_client_callback_google", stagehandActCalls: 2, liveInferenceCalls: 2,
+          actionExecutions: 1,
           taskCompleted: false, errorCode: "provider_error", providerFailure: diagnostic,
-          sdkReportedMetrics: { stagehandActCalls: 1, liveInferenceCalls: 0, actionExecutions: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, inferenceTimeMs: 0, lateResultsDiscarded: 0 },
+          sdkReportedMetrics: { stagehandActCalls: 2, liveInferenceCalls: 1, actionExecutions: 1, inputTokens: metadata.inputTokens, outputTokens: metadata.outputTokens, reasoningTokens: metadata.reasoningTokens, inferenceTimeMs: metadata.inferenceTimeMs, lateResultsDiscarded: 0 },
           providerCallback: callbackSnapshot,
         });
       });
       await mutateJson(join(bundle, "same-browser.json"), (proof) => { proof.inferenceTransport = "stagehand_client_callback_google"; });
-      retained.push(...callbackEvents, { eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", sequence: 0, timestamp: new Date().toISOString(), monotonicMs: 50, source: "agent", type: "agent.error", actionId, requestId: null, payload: { adapterId: "stagehand-v4", code: "provider_error", attempts: 1, providerFailure: diagnostic } });
+      const retained = [targetProof, firstProposal, ...callbackEvents.slice(0, 2), firstActionResult, secondProposal, ...callbackEvents.slice(2), { eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", sequence: 0, timestamp: new Date().toISOString(), monotonicMs: 50, source: "agent", type: "agent.error", actionId: null, requestId: null, payload: { adapterId: "stagehand-v4", code: "provider_error", attempts: 2, providerFailure: diagnostic } }];
       retained.forEach((event, index) => { event.sequence = index + 1; });
       await writeFile(eventPath, retained.map((event) => JSON.stringify(event)).join("\n") + "\n");
-      await writeFile(join(bundle, "model-actions.jsonl"), "");
+      await writeFile(join(bundle, "model-actions.jsonl"), `${JSON.stringify(firstActionRow)}\n`);
       await import("node:fs/promises").then(({ unlink }) => Promise.all([unlink(join(bundle, "screenshots/at-boundary.png")), unlink(join(bundle, "screenshots/after-agent.png"))]));
       await writeJson(join(bundle, "terminal.json"), { executionStatus: "browser_error", taskCompleted: false, faultTriggered: false, observerStatus: "complete", contractPassed: true, terminalOutcome: "agent_error", exitReason: "provider_error", quiescenceVerified: true, cleanupErrors: [], artifactError: null });
 
@@ -211,9 +218,48 @@ describe("Stagehand artifact validation (mocked evidence fixtures only; not live
       expect(result.status).toBe("browser_error");
       expect(result.taskCompleted).toBe(false);
       expect(result.observedEffects).toEqual([]);
-      expect(callbackSnapshot.successfulResponses).toBe(1);
-      expect(retained.some((event) => event.type === "agent.model_action_result")).toBe(false);
+      expect(callbackSnapshot.successfulResponses).toBe(2);
+      expect(retained.filter((event) => event.type === "agent.model_action_result")).toHaveLength(1);
       expect(stagehandSingleRunExitCode({ artifactValid: validation.valid, mode: "clean", executionStatus: "browser_error", taskCompleted: false, faultTriggered: false, observerStatus: "complete", contractPassed: true, terminalOutcome: "agent_error", expectedViolationAsserted: false, quiescenceVerified: true, cleanupErrors: [] })).toBe(1);
+
+      const reordered = join(temp, "callback-after-stagehand-error");
+      await cp(bundle, reordered, { recursive: true });
+      const reorderedPath = join(reordered, "events.jsonl");
+      const reorderedEvents = (await readFile(reorderedPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as JsonObject);
+      const errorIndex = reorderedEvents.findIndex((event) => event.type === "agent.error");
+      const completionIndexes = reorderedEvents.map((event, index) => event.type === "provider.inference_completed" ? index : -1).filter((index) => index >= 0);
+      const completionIndex = completionIndexes.at(-1)!;
+      const [completion] = reorderedEvents.splice(completionIndex, 1);
+      reorderedEvents.splice(errorIndex, 0, completion!);
+      reorderedEvents.forEach((event, index) => { event.sequence = index + 1; });
+      await writeFile(reorderedPath, reorderedEvents.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      expect((await validateStagehandArtifacts(reordered)).valid).toBe(false);
+
+      const priorCallbackOnly = join(temp, "prior-callback-cannot-explain-second-action");
+      await cp(bundle, priorCallbackOnly, { recursive: true });
+      await mutateJson(join(priorCallbackOnly, "agent-metadata.json"), (metadata) => {
+        const firstRequest = metadata.providerCallback.requests[0];
+        metadata.providerCallback.requests = [firstRequest];
+        metadata.providerCallback.requestCount = 1;
+        metadata.providerCallback.successfulResponses = 1;
+        metadata.providerCallback.failedResponses = 0;
+        metadata.providerCallback.usageMetadataResponses = 1;
+        metadata.providerCallback.totalLatencyMs = firstRequest.latencyMs;
+        metadata.providerCallback.providerObservedUsage = {
+          promptTokenCount: firstRequest.usageMetadata.promptTokenCount,
+          candidatesTokenCount: firstRequest.usageMetadata.candidatesTokenCount,
+          totalTokenCount: firstRequest.usageMetadata.totalTokenCount,
+          thoughtsTokenCount: firstRequest.usageMetadata.thoughtsTokenCount ?? 0,
+          cachedContentTokenCount: firstRequest.usageMetadata.cachedContentTokenCount ?? 0,
+        };
+        metadata.liveInferenceCalls = 1;
+      });
+      const priorOnlyPath = join(priorCallbackOnly, "events.jsonl");
+      const priorOnlyEvents = (await readFile(priorOnlyPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as JsonObject)
+        .filter((event) => event.requestId == null || event.requestId === callbackSnapshot.requests[0]?.requestId);
+      priorOnlyEvents.forEach((event, index) => { event.sequence = index + 1; });
+      await writeFile(priorOnlyPath, priorOnlyEvents.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      expect((await validateStagehandArtifacts(priorCallbackOnly)).valid).toBe(false);
     } finally { await rm(temp, { recursive: true, force: true }); }
   }, 60_000);
 

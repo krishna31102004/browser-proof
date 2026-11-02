@@ -87,13 +87,19 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
     const callbackEvidence = isRecord(metadata.providerCallback) ? metadata.providerCallback : undefined;
     const callbackEvidenceRequests = Array.isArray(callbackEvidence?.requests) ? callbackEvidence.requests as ObjectValue[] : [];
     const agentErrorRows = events.filter((event) => event.type === "agent.error" && event.payload.code === "provider_error");
-    const unmatchedProviderAction = result.status === "browser_error" && isRecord(result.agent) && result.agent.error === "provider_error" && metadata.errorCode === "provider_error" && result.taskCompleted === false && resultRows.length === 0 && requestRows.length === 0 && Array.isArray(result.observedEffects) && result.observedEffects.length === 0 && proposalRows.length - resultRows.length === 1 && agentErrorRows.length === 1 && agentErrorRows[0]?.payload.attempts === metadata.stagehandActCalls && (agentErrorRows[0]?.actionId === null || agentErrorRows[0]?.actionId === proposalRows[0]?.actionId);
+    const unmatchedProposals = proposalRows.filter((proposal) => !resultRows.some((actionResult) => actionResult.actionId === proposal.actionId));
+    const unmatchedProposal = unmatchedProposals.length === 1 ? unmatchedProposals[0] : undefined;
+    const unmatchedProviderAction = result.status === "browser_error" && isRecord(result.agent) && result.agent.error === "provider_error" && metadata.errorCode === "provider_error" && result.taskCompleted === false && resultRows.length === proposalRows.length - 1 && requestRows.length === 0 && Array.isArray(result.observedEffects) && result.observedEffects.length === 0 && unmatchedProposal !== undefined && agentErrorRows.length === 1 && agentErrorRows[0]?.payload.attempts === metadata.stagehandActCalls && (agentErrorRows[0]?.actionId == null || agentErrorRows[0]?.actionId === unmatchedProposal.actionId);
     const callbackResponseBeforeStagehandFailure = unmatchedProviderAction && inferenceTransport === "stagehand_client_callback_google" && callbackEvidenceRequests.some((request) => {
-      if (request.status !== "completed" || typeof request.requestId !== "string" || typeof request.actionId !== "string" || request.actionId !== proposalRows[0]?.actionId) return false;
+      if (request.status !== "completed" || typeof request.requestId !== "string" || typeof request.actionId !== "string" || request.actionId !== unmatchedProposal?.actionId) return false;
       const completion = events.find((event) => event.type === "provider.inference_completed" && event.requestId === request.requestId && event.actionId === request.actionId);
-      return completion !== undefined && agentErrorRows[0]?.actionId === request.actionId && events.indexOf(completion) < events.indexOf(agentErrorRows[0]!);
+      // StagehandV4AgentAdapter clears its callback action context before it
+      // emits agent.error, so production error rows have no actionId. The
+      // unique unmatched proposal plus callback request correlation supplies
+      // the action binding for this failure boundary.
+      return completion !== undefined && events.indexOf(completion) < events.indexOf(agentErrorRows[0]!);
     });
-    const callbackProviderFailureBeforeActionResult = unmatchedProviderAction && inferenceTransport === "stagehand_client_callback_google" && callbackEvidenceRequests.length > 0 && callbackEvidenceRequests.every((request) => request.status === "failed") && agentErrorRows[0] !== undefined && callbackEvidenceRequests.every((request) => events.some((event) => event.type === "provider.inference_failed" && event.requestId === request.requestId && events.indexOf(event) < events.indexOf(agentErrorRows[0]!)));
+    const callbackProviderFailureBeforeActionResult = unmatchedProviderAction && inferenceTransport === "stagehand_client_callback_google" && callbackEvidenceRequests.some((request) => request.status === "failed" && request.actionId === unmatchedProposal?.actionId && events.some((event) => event.type === "provider.inference_failed" && event.requestId === request.requestId && events.indexOf(event) < events.indexOf(agentErrorRows[0]!)));
     const providerFailureBeforeActionResult = unmatchedProviderAction && ((inferenceTransport === "native_google_extension" && metadata.liveInferenceCalls === 0) || callbackProviderFailureBeforeActionResult);
     const missingActionResultIsExplained = providerFailureBeforeActionResult || callbackResponseBeforeStagehandFailure;
     const missingResultCount = proposalRows.length - resultRows.length;
@@ -168,7 +174,7 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
         const terminal = providerEvents.filter((event) => (event.type === "provider.inference_completed" || event.type === "provider.inference_failed") && event.requestId === request.requestId);
         const matchingAction = proposalRows.find((event) => event.actionId === request.actionId);
         const actionResult = resultRows.find((event) => event.actionId === request.actionId);
-        const actionFailure = events.find((event) => event.type === "agent.error" && event.actionId === request.actionId);
+        const actionFailure = events.find((event) => event.type === "agent.error" && (event.actionId === request.actionId || (event.actionId == null && unmatchedProposal?.actionId === request.actionId && event.payload.attempts === metadata.stagehandActCalls)));
         if (started.length !== 1 || terminal.length !== 1 || (request.actionId !== null && !matchingAction) || started[0]?.payload.transport !== inferenceTransport || terminal[0]?.payload.transport !== inferenceTransport || terminal[0]?.actionId !== started[0]?.actionId || terminal[0]?.actionId !== (request.actionId === null ? undefined : request.actionId) || events.indexOf(terminal[0]!) <= events.indexOf(started[0]!) || (matchingAction && events.indexOf(started[0]!) <= events.indexOf(matchingAction)) || (actionResult && events.indexOf(terminal[0]!) >= events.indexOf(actionResult)) || (!actionResult && actionFailure && events.indexOf(terminal[0]!) >= events.indexOf(actionFailure))) errors.push("client callback request event correlation or order is invalid");
         if (request.status === "completed" && (terminal[0]?.type !== "provider.inference_completed" || typeof request.httpStatus !== "number" || request.httpStatus < 200 || request.httpStatus >= 300)) errors.push("successful client callback lacks a successful provider response event");
         if (request.status === "failed" && (terminal[0]?.type !== "provider.inference_failed" || !isRecord(request.error))) errors.push("failed client callback lacks sanitized provider failure evidence");
@@ -179,7 +185,8 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
     }
     const hasRefundRequest = requestRows.some((event) => typeof event.payload.url === "string" && new URL(event.payload.url).pathname === "/api/orders/A123/refund");
     const requiresBoundaryScreenshot = hasRefundRequest || triggerEvents.length > 0;
-    const requiresAfterScreenshot = resultRows.length > 0 || hasRefundRequest || result.taskCompleted === true;
+    const stagehandEndedWithError = typeof metadata.errorCode === "string" && metadata.errorCode.length > 0 || isRecord(result.agent) && typeof result.agent.error === "string";
+    const requiresAfterScreenshot = result.taskCompleted === true || (!stagehandEndedWithError && (resultRows.length > 0 || hasRefundRequest));
     if (trace.subarray(0, 2).toString() !== "PK" || before.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a" || (requiresBoundaryScreenshot && boundary?.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") || (requiresAfterScreenshot && after?.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a")) errors.push("trace or required screenshot signature invalid");
     execFileSync("unzip", ["-t", resolve(artifactDir, "trace.zip")], { stdio: "ignore" });
     const bundleText = JSON.stringify({ manifest, scenario, schedule, result, effects, metadata, proof, events, actionRows });
