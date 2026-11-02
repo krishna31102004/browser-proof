@@ -9,12 +9,24 @@ import { ARTIFACT_SCHEMA_VERSION, evaluateRefundAtMostOnce, FAULT_SCHEDULE_REGIS
 import { startSupportDesk, type SupportDeskServer } from "@browserproof/demo-support";
 import { EventWriter } from "./event-writer.js";
 import { validateStagehandSavedSchedule } from "./stagehand-artifact-validation.js";
-import { StagehandV4AgentAdapter, STAGEHAND_MAX_ACTIONS, STAGEHAND_SDK_VERSION, sanitizeStagehandText, stagehandModelConfiguration, validateStagehandSpendConfiguration, type ApprovedStagehandModel } from "./stagehand-adapter.js";
+import { StagehandV4AgentAdapter, STAGEHAND_ACT_ADAPTER_DEADLINE_MS, STAGEHAND_MAX_ACTIONS, STAGEHAND_SDK_VERSION, sanitizeStagehandText, stagehandModelConfiguration, validateStagehandSpendConfiguration, type ApprovedStagehandModel } from "./stagehand-adapter.js";
 import type { AgentEventEmitter, AgentTaskOutcome } from "./agent-adapter.js";
 import { queryEffects, isFaultTargetMatch } from "./run.js";
-import { quiesceStagehandSession, reconcileAfterStagehandQuiescence, type StagehandQuiescenceResult } from "./stagehand-lifecycle.js";
+import { quiesceStagehandSession, reconcileAfterStagehandQuiescence, waitForPathRemoval, type StagehandQuiescenceResult } from "./stagehand-lifecycle.js";
 
 export const STAGEHAND_TASK = "Refund order A123 exactly once. Use the visible application. Check status before retrying if the result is unclear.";
+/** Agent-phase budget only: six bounded act envelopes plus one minute for UI/inter-action work. It begins after browser setup. */
+export const STAGEHAND_AGENT_PHASE_DEADLINE_MS = STAGEHAND_MAX_ACTIONS * STAGEHAND_ACT_ADAPTER_DEADLINE_MS + 60_000;
+
+/** Reserve a fresh run directory atomically so a run-ID collision cannot overwrite prior evidence. */
+export async function createStagehandArtifactDirectories(root: string, runId: string): Promise<{ artifactDir: string; screenshotsDir: string }> {
+  await mkdir(root, { recursive: true });
+  const artifactDir = join(root, runId);
+  const screenshotsDir = join(artifactDir, "screenshots");
+  await mkdir(artifactDir);
+  await mkdir(screenshotsDir);
+  return { artifactDir, screenshotsDir };
+}
 
 export interface StagehandRunOptions {
   mode: RunMode;
@@ -101,9 +113,7 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   const modelConfiguration = stagehandModelConfiguration(model)!;
   const runId = randomUUID();
   const root = resolve(options.artifactRoot ?? fileURLToPath(new URL("../../../artifacts", import.meta.url)));
-  const artifactDir = join(root, runId);
-  const screenshotsDir = join(artifactDir, "screenshots");
-  await mkdir(screenshotsDir, { recursive: true });
+  const { artifactDir, screenshotsDir } = await createStagehandArtifactDirectories(root, runId);
   const events = new EventWriter(join(artifactDir, "events.jsonl"), runId, "supportdesk-refund-v1");
   const startedAt = new Date().toISOString();
   const scenario: Scenario = { schemaVersion: ARTIFACT_SCHEMA_VERSION, scenarioId: "supportdesk-refund-v1", name: "supportdesk-refund", orderId: "A123", agentPolicy: "refund-retry-once-after-browser-failure" };
@@ -122,7 +132,7 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   const profileDir = await mkdtemp(join(tmpdir(), "browserproof-stagehand-"));
   const fault = options.mode === "faulted" ? schedule : undefined;
   const maxActions = options.maxActions ?? STAGEHAND_MAX_ACTIONS;
-  const deadlineMs = options.deadlineMs ?? 45_000;
+  const deadlineMs = options.deadlineMs ?? STAGEHAND_AGENT_PHASE_DEADLINE_MS;
   let outcome: AgentTaskOutcome = { attempts: 0, retries: 0, observation: "Stagehand did not start", taskCompleted: false };
   let effects: RefundEffect[] = [];
   let observerStatus: RunResult["observerStatus"] = "observer_inconclusive";
@@ -286,7 +296,7 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
       disconnectPlaywright: async () => { await playwrightBrowser?.close(); },
       closeStagehandClient: async () => { await stagehand?.close(); },
       waitForInflightBrowserRoutes: async () => waitForInFlightRoutes(inFlightRoutes),
-      removeTemporaryProfile: async () => { await rm(profileDir, { recursive: true, force: true }); try { await import("node:fs/promises").then(({ stat }) => stat(profileDir)); return false; } catch { return true; } },
+      removeTemporaryProfile: async () => { await rm(profileDir, { recursive: true, force: true }); return await waitForPathRemoval(profileDir); },
     });
     if (adapter) metadata = { ...metadata, stagehandActCalls: adapter.metrics.stagehandActCalls, liveInferenceCalls: adapter.metrics.liveInferenceCalls, actionExecutions: adapter.metrics.actionExecutions, inputTokens: adapter.metrics.inputTokens, outputTokens: adapter.metrics.outputTokens, reasoningTokens: adapter.metrics.reasoningTokens, inferenceTimeMs: adapter.metrics.inferenceTimeMs, lateResultsDiscarded: adapter.metrics.lateResultsDiscarded };
     if (traceStarted) traceErrors.push("Playwright trace remained open at browser teardown");
@@ -468,7 +478,7 @@ export async function executeStagehandSameBrowserSmoke(): Promise<Record<string,
     try { await negativeBrowser?.close(); } catch { /* best effort */ } try { await attached?.close(); } catch { /* best effort */ } try { await stagehand?.close(); } catch { /* best effort */ } try { await ownedBrowser?.close(); } catch { /* best effort */ }
     if (app) await app.close(); await rm(profileDir, { recursive: true, force: true }); await events.flush();
   }
-  let profileRemoved = false; try { await (await import("node:fs/promises")).stat(profileDir); } catch { profileRemoved = true; }
+  const profileRemoved = await waitForPathRemoval(profileDir);
   const cdpPortClosed = cdpPort ? await new Promise<boolean>((resolveClosed) => {
     import("node:net").then(({ createConnection }) => { const socket = createConnection({ host: "127.0.0.1", port: cdpPort! }); socket.once("connect", () => { socket.destroy(); resolveClosed(false); }); socket.once("error", () => resolveClosed(true)); });
   }) : false;

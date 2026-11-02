@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { quiesceStagehandSession, reconcileAfterStagehandQuiescence } from "../src/stagehand-lifecycle.js";
+import { quiesceStagehandSession, reconcileAfterStagehandQuiescence, waitForPathRemoval } from "../src/stagehand-lifecycle.js";
 import { stagehandSingleRunExitCode } from "../src/stagehand-cli-policy.js";
 import { deriveStagehandTerminalEvidence } from "../src/stagehand-run.js";
 
@@ -62,6 +62,23 @@ describe("Stagehand timeout fencing and quiescence", () => {
       closeStagehandClient: async () => undefined,
       waitForInflightBrowserRoutes: async () => true,
       removeTemporaryProfile: async () => false,
+    });
+    expect(result.quiescenceVerified).toBe(true);
+    expect(result.profileRemoved).toBe(false);
+    expect(result.cleanupErrors).toContain("temporary browser profile removal failed");
+  });
+
+  it("does not treat a post-removal permission error as proof the profile is absent", async () => {
+    const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    const removed = await waitForPathRemoval("temporary-profile", 0, async () => { throw permissionError; });
+    expect(removed).toBe(false);
+    const result = await quiesceStagehandSession({
+      closeOwnedBrowser: async () => undefined,
+      browserPortIsClosed: async () => true,
+      disconnectPlaywright: async () => undefined,
+      closeStagehandClient: async () => undefined,
+      waitForInflightBrowserRoutes: async () => true,
+      removeTemporaryProfile: async () => removed,
     });
     expect(result.quiescenceVerified).toBe(true);
     expect(result.profileRemoved).toBe(false);

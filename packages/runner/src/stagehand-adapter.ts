@@ -3,6 +3,12 @@ import type { AgentAdapter, AgentAdapterMetadata, AgentTaskInput, AgentTaskOutco
 
 export const STAGEHAND_SDK_VERSION = "4.3.0";
 export const STAGEHAND_MAX_ACTIONS = 6;
+/** Stagehand's act progress timeout includes model inference and its UI action. */
+export const STAGEHAND_ACT_TIMEOUT_MS = 90_000;
+/** Stagehand 4.3.0's JSON-RPC client adds a 10s response grace after operation timeout. */
+export const STAGEHAND_RPC_RESPONSE_GRACE_MS = 10_000;
+/** Adapter deadline leaves a small transport margin beyond Stagehand's documented RPC grace. */
+export const STAGEHAND_ACT_ADAPTER_DEADLINE_MS = STAGEHAND_ACT_TIMEOUT_MS + STAGEHAND_RPC_RESPONSE_GRACE_MS + 5_000;
 
 /** Exact model/provider pairs supported by the pinned Stagehand v4 API shape. */
 export const STAGEHAND_MODEL_CONFIGURATIONS = [
@@ -268,9 +274,10 @@ export class StagehandV4AgentAdapter implements AgentAdapter {
 
         let result: ActResult;
         try {
-          const timeout = Math.max(1, Math.min(15_000, remaining));
+          const timeout = Math.max(1, Math.min(STAGEHAND_ACT_TIMEOUT_MS, remaining));
+          const adapterDeadline = Math.max(1, Math.min(timeout + STAGEHAND_RPC_RESPONSE_GRACE_MS + 5_000, remaining));
           const pending = this.options.stagehand.act(input.task, { page: input.stagehandPage, timeout });
-          result = parseActResult(await executeWithDeadline(pending, input, timeout, () => { metrics.lateResultsDiscarded += 1; }));
+          result = parseActResult(await executeWithDeadline(pending, input, adapterDeadline, () => { metrics.lateResultsDiscarded += 1; }));
         } catch (error) {
           if (error instanceof StagehandAdapterFailure) throw error;
           throw new StagehandAdapterFailure("provider_error", diagnoseProviderFailure(error));

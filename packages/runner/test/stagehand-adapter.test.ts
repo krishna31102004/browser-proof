@@ -8,6 +8,8 @@ import {
 } from "../src/agent-adapter.js";
 import {
   STAGEHAND_MODEL_CONFIGURATIONS,
+  STAGEHAND_ACT_ADAPTER_DEADLINE_MS,
+  STAGEHAND_ACT_TIMEOUT_MS,
   StagehandAdapterFailure,
   StagehandConfigurationError,
   StagehandV4AgentAdapter,
@@ -119,6 +121,36 @@ describe("Stagehand v4 adapter mocked plumbing (not live provider proof)", () =>
     expect(JSON.stringify(emitted)).not.toContain(MOCK_KEY);
     expect(adapter.metrics).toMatchObject({ stagehandActCalls: 1, liveInferenceCalls: 1, actionExecutions: 1, inputTokens: 12, outputTokens: 3 });
     expect(adapter.metadata).toMatchObject({ provider: "google", model: "google/gemini-3.8-flash" });
+  });
+
+  it("uses a model-latency-aware bounded act timeout with the pinned SDK response grace", async () => {
+    expect(STAGEHAND_ACT_TIMEOUT_MS).toBe(90_000);
+    expect(STAGEHAND_ACT_ADAPTER_DEADLINE_MS).toBe(105_000);
+    const { adapter, input, stagehand } = setup({ deadlineOffsetMs: 120_000, maxActions: 1, confirm: async () => true });
+    const outcome = await adapter.runTask(input);
+    expect(outcome.taskCompleted).toBe(true);
+    expect(stagehand.act).toHaveBeenCalledWith(input.task, expect.objectContaining({ page: input.stagehandPage, timeout: 90_000 }));
+  });
+
+  it("fences an act after the extended adapter deadline and discards a late provider result", async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: (value: unknown) => void;
+      let completed = false;
+      const pending = new Promise<unknown>((resolve) => { release = resolve; });
+      const setupResult = setup({ act: () => pending, deadlineOffsetMs: 200_000, maxActions: 1 });
+      const running = setupResult.adapter.runTask(setupResult.input).then((result) => { completed = true; return result; });
+      await Promise.resolve(); await Promise.resolve();
+      expect(setupResult.stagehand.act).toHaveBeenCalledWith(setupResult.input.task, expect.objectContaining({ timeout: 90_000 }));
+      await vi.advanceTimersByTimeAsync(104_999);
+      expect(completed).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const outcome = await running;
+      expect(outcome.errorCode).toBe("deadline_exceeded");
+      release(actResult()); await Promise.resolve(); await Promise.resolve();
+      expect(setupResult.adapter.metrics.lateResultsDiscarded).toBe(1);
+      expect(setupResult.emitted.map(({ event }) => event)).not.toContain("agent.model_action_result");
+    } finally { vi.useRealTimers(); }
   });
 
   it("sanitizes credential-like text, URLs, and control characters", () => {

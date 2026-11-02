@@ -1,3 +1,5 @@
+import { stat } from "node:fs/promises";
+
 export interface StagehandQuiescenceDependencies {
   /** Must terminate the process/session that owns the browser, not just detach Playwright. */
   closeOwnedBrowser(): Promise<void>;
@@ -25,6 +27,19 @@ export interface StagehandReconciliationResult<T> {
 }
 
 const DEFAULT_CLOSE_TIMEOUT_MS = 5_000;
+
+/** Verify removal without treating permission or I/O errors as proof of absence. */
+export async function waitForPathRemoval(path: string, timeoutMs = 2_000, statPath: (path: string) => Promise<unknown> = stat): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try { await statPath(path); }
+    catch (error) {
+      return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise<void>((resolveWait) => setTimeout(resolveWait, 50));
+  }
+}
 
 async function bounded<T>(operation: () => Promise<T>, timeoutMs: number): Promise<{ value?: T; error?: string; timedOut: boolean }> {
   let timer: ReturnType<typeof setTimeout> | undefined;
