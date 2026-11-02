@@ -56,6 +56,46 @@ async function createMockedValidatorFixture(spikeArtifactDir: string, destinatio
 async function mutateJson(path: string, update: (value: JsonObject) => void): Promise<void> { const value = await readJson(path); update(value); await writeJson(path, value); }
 
 describe("Stagehand artifact validation (mocked evidence fixtures only; not live-model proof)", () => {
+  it("validates callback-observed Google usage separately and rejects duplicate or miscorrelated callback request evidence", async () => {
+    const spike = await executeStagehandSameBrowserSmoke();
+    const temp = await mkdtemp(join(tmpdir(), "browserproof-stagehand-client-callback-fixture-"));
+    const bundle = join(temp, "synthetic-client-callback-fixture");
+    await createMockedValidatorFixture(String(spike.artifactDir), bundle);
+    try {
+      const requestId = `mock-provider-${randomUUID()}`;
+      const eventPath = join(bundle, "events.jsonl");
+      const events = (await readFile(eventPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as JsonObject);
+      const runId = events[0]!.runId as string;
+      const actionId = events.find((event) => event.type === "agent.action_proposed")!.actionId as string;
+      const metadata = await readJson(join(bundle, "agent-metadata.json"));
+      metadata.inferenceTransport = "stagehand_client_callback_google";
+      metadata.liveInferenceCalls = 1;
+      metadata.sdkReportedMetrics = { stagehandActCalls: 1, liveInferenceCalls: 1, actionExecutions: 1, inputTokens: 12, outputTokens: 3, reasoningTokens: 0, inferenceTimeMs: 24, lateResultsDiscarded: 0 };
+      metadata.providerCallback = {
+        transport: "stagehand_client_callback_google", provider: "google", model: "google/gemini-3.8-flash", requestLimit: 6,
+        requestCount: 1, successfulResponses: 1, failedResponses: 0, usageMetadataResponses: 1, totalLatencyMs: 51,
+        providerObservedUsage: { promptTokenCount: 9, candidatesTokenCount: 4, totalTokenCount: 13, thoughtsTokenCount: 2, cachedContentTokenCount: 1 },
+        requests: [{ requestId, actionId, status: "completed", httpStatus: 200, latencyMs: 51, finishReason: "STOP", usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 4, totalTokenCount: 13, thoughtsTokenCount: 2, cachedContentTokenCount: 1 } }],
+      };
+      await writeJson(join(bundle, "agent-metadata.json"), metadata);
+      await mutateJson(join(bundle, "same-browser.json"), (proof) => { proof.inferenceTransport = "stagehand_client_callback_google"; });
+      const proposalIndex = events.findIndex((event) => event.type === "agent.action_proposed");
+      events.splice(proposalIndex + 1, 0,
+        { eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", sequence: 0, timestamp: new Date().toISOString(), monotonicMs: 4, source: "agent", type: "provider.inference_started", requestId, actionId, payload: { transport: "stagehand_client_callback_google", provider: "google", model: "google/gemini-3.8-flash" } },
+        { eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", sequence: 0, timestamp: new Date().toISOString(), monotonicMs: 55, source: "agent", type: "provider.inference_completed", requestId, actionId, payload: { transport: "stagehand_client_callback_google", provider: "google", model: "google/gemini-3.8-flash", httpStatus: 200, latencyMs: 51, finishReason: "STOP", usage: metadata.providerCallback.requests[0].usageMetadata } },
+      );
+      events.forEach((event, index) => { event.sequence = index + 1; });
+      await writeFile(eventPath, events.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      expect(await validateStagehandArtifacts(bundle)).toEqual({ valid: true, errors: [] });
+      await cp(bundle, join(temp, "duplicate-id"), { recursive: true });
+      await mutateJson(join(temp, "duplicate-id", "agent-metadata.json"), (data) => { data.providerCallback.requests.push({ ...data.providerCallback.requests[0] }); data.providerCallback.requestCount = 2; data.providerCallback.successfulResponses = 2; data.liveInferenceCalls = 2; });
+      expect((await validateStagehandArtifacts(join(temp, "duplicate-id"))).valid).toBe(false);
+      await cp(bundle, join(temp, "wrong-action"), { recursive: true });
+      await mutateJson(join(temp, "wrong-action", "agent-metadata.json"), (data) => { data.providerCallback.requests[0].actionId = "not-a-stagehand-action"; });
+      expect((await validateStagehandArtifacts(join(temp, "wrong-action"))).valid).toBe(false);
+    } finally { await rm(temp, { recursive: true, force: true }); }
+  }, 60_000);
+
   it("preserves a verifiable provider failure before any refund request without calling it successful acceptance", async () => {
     const spike = await executeStagehandSameBrowserSmoke();
     const temp = await mkdtemp(join(tmpdir(), "browserproof-stagehand-provider-failure-"));

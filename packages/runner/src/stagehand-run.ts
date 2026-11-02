@@ -10,6 +10,8 @@ import { startSupportDesk, type SupportDeskServer } from "@browserproof/demo-sup
 import { EventWriter } from "./event-writer.js";
 import { validateStagehandSavedSchedule } from "./stagehand-artifact-validation.js";
 import { StagehandV4AgentAdapter, STAGEHAND_ACT_ADAPTER_DEADLINE_MS, STAGEHAND_MAX_ACTIONS, STAGEHAND_SDK_VERSION, sanitizeStagehandText, stagehandModelConfiguration, validateStagehandSpendConfiguration, type ApprovedStagehandModel } from "./stagehand-adapter.js";
+import { createStagehandGeminiCallback, type GeminiCallbackMetrics } from "./stagehand-gemini-callback.js";
+import { isAllowedNativeGeminiWorkerRequest, type StagehandInferenceTransport } from "./stagehand-network-policy.js";
 import type { AgentEventEmitter, AgentTaskOutcome } from "./agent-adapter.js";
 import { queryEffects, isFaultTargetMatch } from "./run.js";
 import { quiesceStagehandSession, reconcileAfterStagehandQuiescence, waitForPathRemoval, type StagehandQuiescenceResult } from "./stagehand-lifecycle.js";
@@ -34,6 +36,7 @@ export interface StagehandRunOptions {
   model: ApprovedStagehandModel;
   providerApiKey: string;
   allowFreeTierGemini: boolean;
+  inferenceTransport?: StagehandInferenceTransport;
   artifactRoot?: string;
   schedule?: FaultSchedule;
   maxActions?: number;
@@ -44,7 +47,7 @@ export type StagehandTerminalOutcome = "clean_success" | "expected_violation_obs
 export interface StagehandTerminalEvidence { executionStatus: RunResult["status"]; taskCompleted: boolean; faultTriggered: boolean; observerStatus: RunResult["observerStatus"]; contractPassed: boolean | null; terminalOutcome: StagehandTerminalOutcome; exitReason: string; quiescenceVerified: boolean; cleanupErrors: string[]; artifactError: string | null; }
 export interface StagehandRunSummary { artifactDir: string; result: RunResult; metadataPath: string; sameBrowserPath: string; terminal: StagehandTerminalEvidence; }
 
-interface SameBrowserProof { schemaVersion: 1; architecture: "stagehand-launch-playwright-cdp-attach"; stagehandPageId: string; playwrightTargetId: string; playwrightContextId: string; url: string; stagehandUrl: string; playwrightUrl: string; controlPlaneBlocked: boolean; externalOriginBlocked: boolean; provenBeforeModelCall: true; }
+interface SameBrowserProof { schemaVersion: 1; architecture: "stagehand-launch-playwright-cdp-attach"; stagehandPageId: string; playwrightTargetId: string; playwrightContextId: string; url: string; stagehandUrl: string; playwrightUrl: string; controlPlaneBlocked: boolean; externalOriginBlocked: boolean; inferenceTransport: StagehandInferenceTransport; provenBeforeModelCall: true; }
 
 async function choosePort(): Promise<number> {
   const net = await import("node:net");
@@ -126,6 +129,9 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   let stagehandBrowser: Awaited<ReturnType<typeof localBrowser.launch>> | undefined;
   let stagehand: Stagehand | undefined;
   let adapter: StagehandV4AgentAdapter | undefined;
+  let geminiCallback: ReturnType<typeof createStagehandGeminiCallback> | undefined;
+  const inferenceTransport = options.inferenceTransport ?? "native_google_extension";
+  if (inferenceTransport !== "native_google_extension" && inferenceTransport !== "stagehand_client_callback_google") throw new Error("Unsupported Stagehand inference transport");
   let playwrightBrowser: Browser | undefined;
   let context: Awaited<ReturnType<Browser["newContext"]>> | undefined;
   let traceStarted = false;
@@ -147,7 +153,7 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   let actionIndex = 0;
   const modelActionRows: Array<Record<string, unknown>> = [];
   let sameBrowserProof: SameBrowserProof | undefined;
-  let metadata: Record<string, unknown> = { schemaVersion: 1, adapterId: "stagehand-v4", adapterVersion: "1.0.0", mode: "model-backed-stagehand", sdkVersion: STAGEHAND_SDK_VERSION, provider: modelConfiguration.provider, providerModelId: modelConfiguration.providerModelId, model, stagehandActCalls: 0, liveInferenceCalls: 0, actionExecutions: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, inferenceTimeMs: 0, lateResultsDiscarded: 0, taskCompleted: false, errorCode: null };
+  let metadata: Record<string, unknown> = { schemaVersion: 1, adapterId: "stagehand-v4", adapterVersion: "1.0.0", mode: "model-backed-stagehand", sdkVersion: STAGEHAND_SDK_VERSION, provider: modelConfiguration.provider, providerModelId: modelConfiguration.providerModelId, model, inferenceTransport, stagehandActCalls: 0, liveInferenceCalls: 0, actionExecutions: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, inferenceTimeMs: 0, lateResultsDiscarded: 0, taskCompleted: false, errorCode: null };
   let cdpPort: number | undefined;
   let controlUrl: string | undefined;
   let backendReset = false;
@@ -178,7 +184,15 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
 
     cdpPort = await choosePort();
     stagehandBrowser = await localBrowser.launch({ headless: true, port: cdpPort, userDataDir: profileDir });
-    stagehand = await Stagehand.create({ browser: stagehandBrowser, model: { modelName: model, apiKey: options.providerApiKey }, logging: { level: "off" } });
+    if (inferenceTransport === "stagehand_client_callback_google") {
+      geminiCallback = createStagehandGeminiCallback({
+        apiKey: options.providerApiKey,
+        onEvent: async (type, payload, correlation) => { await recordEvent("agent", type, payload, correlation); },
+      });
+      stagehand = await Stagehand.create({ browser: stagehandBrowser, model: geminiCallback.clientLLM, logging: { level: "off" } });
+    } else {
+      stagehand = await Stagehand.create({ browser: stagehandBrowser, model: { modelName: model, apiKey: options.providerApiKey }, logging: { level: "off" } });
+    }
     playwrightBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
     context = playwrightBrowser.contexts()[0];
     if (!context) throw new Error("Playwright did not attach to Stagehand's browser context");
@@ -194,7 +208,7 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
     await stagehandPage.goto(baseUrl);
     const stagehandPageId = stagehandPage.pageId;
     if (target.targetId !== stagehandPageId || await stagehandPage.url() !== page.url()) throw new Error("Stagehand and Playwright page target/URL mismatch");
-    sameBrowserProof = { schemaVersion: 1, architecture: "stagehand-launch-playwright-cdp-attach", stagehandPageId, playwrightTargetId: target.targetId, playwrightContextId: target.browserContextId ?? "unavailable", url: baseUrl, stagehandUrl: await stagehandPage.url(), playwrightUrl: page.url(), controlPlaneBlocked: false, externalOriginBlocked: false, provenBeforeModelCall: true };
+    sameBrowserProof = { schemaVersion: 1, architecture: "stagehand-launch-playwright-cdp-attach", stagehandPageId, playwrightTargetId: target.targetId, playwrightContextId: target.browserContextId ?? "unavailable", url: baseUrl, stagehandUrl: await stagehandPage.url(), playwrightUrl: page.url(), controlPlaneBlocked: false, externalOriginBlocked: false, inferenceTransport, provenBeforeModelCall: true };
     await writeFile(join(artifactDir, "same-browser.json"), `${JSON.stringify(sameBrowserProof, null, 2)}\n`);
     await context.tracing.start({ screenshots: true, snapshots: true, sources: true, title: `${runId} stagehand-v4 ${options.mode}` }); traceStarted = true;
     await page.screenshot({ path: join(screenshotsDir, "before-agent.png"), fullPage: true });
@@ -203,15 +217,28 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
     const requestCommitStatus = new Map<string, boolean>();
     const requestActionIds = new Map<string, string>();
     let controlPlaneBlockedByRoute = false; let externalOriginBlockedByRoute = false;
-    page.on("requestfailed", (request) => {
+    context.on("requestfailed", (request) => {
       const queue = requestIdsByUrl.get(request.url()); const requestId = queue?.shift();
       if (queue?.length === 0) requestIdsByUrl.delete(request.url());
       const actionId = requestId ? requestActionIds.get(requestId) : undefined;
-      void recordEvent("browser", "network.request_failed", { url: request.url(), failureText: request.failure()?.errorText ?? "unknown", upstreamCommitted: requestId ? requestCommitStatus.get(requestId) ?? null : null, browserReceivedSuccess: false, ...(requestId ? { requestId, correlationStrength: "url_and_request_order" } : {}), ...(actionId ? { actionId } : {}) }, { ...(requestId ? { requestId } : {}), ...(actionId ? { actionId } : {}) }).catch(() => undefined);
+      const serviceWorker = request.serviceWorker();
+      let safeRequest: Record<string, unknown>;
+      if (serviceWorker) {
+        const failedUrl = new URL(request.url());
+        safeRequest = { origin: failedUrl.origin, pathname: failedUrl.pathname, method: request.method(), resourceType: request.resourceType(), initiator: "service_worker", serviceWorkerUrl: serviceWorker.url() };
+      } else safeRequest = { url: request.url(), method: request.method(), resourceType: request.resourceType() };
+      void recordEvent("browser", "network.request_failed", { ...safeRequest, failureText: request.failure()?.errorText ?? "unknown", upstreamCommitted: requestId ? requestCommitStatus.get(requestId) ?? null : null, browserReceivedSuccess: false, ...(requestId ? { requestId, correlationStrength: "url_and_request_order" } : {}), ...(actionId ? { actionId } : {}) }, { ...(requestId ? { requestId } : {}), ...(actionId ? { actionId } : {}) }).catch(() => undefined);
     });
+    const stagehandWorkerUrl = context.serviceWorkers().map((worker) => worker.url()).find((url) => url.startsWith("chrome-extension://") && url.endsWith("/service-worker.js"));
+    if (!stagehandWorkerUrl) throw new Error("Stagehand extension service worker was not present in the attached browser context");
     const handleRoute = async (route: Route) => {
       const url = new URL(route.request().url());
       if (url.pathname.startsWith("/__browserproof/")) { controlPlaneBlockedByRoute = true; await route.abort("blockedbyclient"); return; }
+      const serviceWorker = route.request().serviceWorker();
+      if (isAllowedNativeGeminiWorkerRequest({ transport: inferenceTransport, method: route.request().method(), requestUrl: route.request().url(), ...(serviceWorker ? { serviceWorkerUrl: serviceWorker.url() } : {}), expectedStagehandWorkerUrl: stagehandWorkerUrl })) {
+        await recordEvent("agent", "provider.native_worker_request_allowed", { transport: inferenceTransport, provider: "google", model, host: url.hostname, pathname: url.pathname, initiator: "stagehand_extension_service_worker" });
+        await route.continue(); return;
+      }
       if (url.origin !== baseUrl) { externalOriginBlockedByRoute = true; await route.abort("blockedbyclient"); return; }
       if (!isFaultTargetMatch(route.request().method(), route.request().url(), "POST /api/orders/A123/refund")) { await route.continue(); return; }
       const requestId = randomUUID(); const actionId = activeActionId; requestActionIds.set(requestId, actionId);
@@ -271,16 +298,22 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
     };
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), deadlineMs);
     try {
-      adapter = new StagehandV4AgentAdapter({ stagehand, page: stagehandPage, model });
+      adapter = new StagehandV4AgentAdapter({ stagehand, page: stagehandPage, model,
+        ...(geminiCallback ? { onActionStart: (actionId) => geminiCallback?.setActionContext(actionId), onActionEnd: () => geminiCallback?.setActionContext(undefined), abortInference: () => geminiCallback?.abort() } : {}),
+      });
       outcome = await adapter.runTask({ task: STAGEHAND_TASK, page, stagehandPage, maxActions, deadlineAtMs: Date.now() + deadlineMs, signal: controller.signal, events: emitter,
         confirmTaskCompleted: async () => await page.getByRole("status").getByText("Refund successful", { exact: true }).isVisible().catch(() => false) });
-      metadata = { ...metadata, stagehandActCalls: adapter.metrics.stagehandActCalls, liveInferenceCalls: adapter.metrics.liveInferenceCalls, actionExecutions: adapter.metrics.actionExecutions, inputTokens: adapter.metrics.inputTokens, outputTokens: adapter.metrics.outputTokens, reasoningTokens: adapter.metrics.reasoningTokens, inferenceTimeMs: adapter.metrics.inferenceTimeMs, lateResultsDiscarded: adapter.metrics.lateResultsDiscarded, taskCompleted: outcome.taskCompleted, errorCode: outcome.errorCode ?? null, ...(outcome.providerFailure ? { providerFailure: outcome.providerFailure } : {}) };
-    } finally { clearTimeout(timer); }
+      const sdkReportedMetrics = { stagehandActCalls: adapter.metrics.stagehandActCalls, liveInferenceCalls: adapter.metrics.liveInferenceCalls, actionExecutions: adapter.metrics.actionExecutions, inputTokens: adapter.metrics.inputTokens, outputTokens: adapter.metrics.outputTokens, reasoningTokens: adapter.metrics.reasoningTokens, inferenceTimeMs: adapter.metrics.inferenceTimeMs, lateResultsDiscarded: adapter.metrics.lateResultsDiscarded };
+      const callbackMetrics = geminiCallback?.snapshot();
+      metadata = { ...metadata, ...sdkReportedMetrics, ...(callbackMetrics ? { liveInferenceCalls: callbackMetrics.successfulResponses, sdkReportedMetrics, providerCallback: callbackMetrics } : { sdkReportedMetrics }), taskCompleted: outcome.taskCompleted, errorCode: outcome.errorCode ?? null, ...(outcome.providerFailure ? { providerFailure: outcome.providerFailure } : {}) };
+    } finally { clearTimeout(timer); if (controller.signal.aborted) geminiCallback?.abort(); }
     if (!outcome.errorCode && !controller.signal.aborted) await page.screenshot({ path: join(screenshotsDir, "after-agent.png"), fullPage: true });
   } catch (error) {
     errorMessage = sanitizeStagehandText((error instanceof Error ? error.message : String(error)).split(options.providerApiKey).join("[credential-redacted]"));
     status = /timeout|timed out/i.test(errorMessage) ? "timeout" : "browser_error";
   } finally {
+    geminiCallback?.abort();
+    const providerCallbacksDrained = geminiCallback ? await geminiCallback.drain(5_000) : true;
     if (context && traceStarted) {
       try {
         const stopTrace = context.tracing.stop({ path: join(artifactDir, "trace.zip") });
@@ -298,7 +331,15 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
       waitForInflightBrowserRoutes: async () => waitForInFlightRoutes(inFlightRoutes),
       removeTemporaryProfile: async () => { await rm(profileDir, { recursive: true, force: true }); return await waitForPathRemoval(profileDir); },
     });
-    if (adapter) metadata = { ...metadata, stagehandActCalls: adapter.metrics.stagehandActCalls, liveInferenceCalls: adapter.metrics.liveInferenceCalls, actionExecutions: adapter.metrics.actionExecutions, inputTokens: adapter.metrics.inputTokens, outputTokens: adapter.metrics.outputTokens, reasoningTokens: adapter.metrics.reasoningTokens, inferenceTimeMs: adapter.metrics.inferenceTimeMs, lateResultsDiscarded: adapter.metrics.lateResultsDiscarded };
+    if (!providerCallbacksDrained) {
+      quiescence.cleanupErrors.push("Gemini client callback did not settle after cancellation");
+      quiescence.quiescenceVerified = false;
+    }
+    if (adapter) {
+      const sdkReportedMetrics = { stagehandActCalls: adapter.metrics.stagehandActCalls, liveInferenceCalls: adapter.metrics.liveInferenceCalls, actionExecutions: adapter.metrics.actionExecutions, inputTokens: adapter.metrics.inputTokens, outputTokens: adapter.metrics.outputTokens, reasoningTokens: adapter.metrics.reasoningTokens, inferenceTimeMs: adapter.metrics.inferenceTimeMs, lateResultsDiscarded: adapter.metrics.lateResultsDiscarded };
+      const callbackMetrics = geminiCallback?.snapshot();
+      metadata = { ...metadata, ...sdkReportedMetrics, ...(callbackMetrics ? { liveInferenceCalls: callbackMetrics.successfulResponses, sdkReportedMetrics, providerCallback: callbackMetrics } : { sdkReportedMetrics }) };
+    }
     if (traceStarted) traceErrors.push("Playwright trace remained open at browser teardown");
   }
   const reconciliation = await reconcileAfterStagehandQuiescence({

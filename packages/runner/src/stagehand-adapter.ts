@@ -65,6 +65,9 @@ export interface StagehandV4AdapterOptions {
   stagehand: Pick<Stagehand, "act">;
   page: StagehandPage;
   model: ApprovedStagehandModel;
+  onActionStart?: (actionId: string) => void;
+  onActionEnd?: () => void;
+  abortInference?: () => void;
 }
 
 export class StagehandAdapterFailure extends Error {
@@ -271,6 +274,7 @@ export class StagehandV4AgentAdapter implements AgentAdapter {
           modelCallPending: true,
         }, actionId);
         metrics.stagehandActCalls += 1;
+        this.options.onActionStart?.(actionId);
 
         let result: ActResult;
         try {
@@ -279,9 +283,12 @@ export class StagehandV4AgentAdapter implements AgentAdapter {
           const pending = this.options.stagehand.act(input.task, { page: input.stagehandPage, timeout });
           result = parseActResult(await executeWithDeadline(pending, input, adapterDeadline, () => { metrics.lateResultsDiscarded += 1; }));
         } catch (error) {
+          this.options.onActionEnd?.();
+          if (error instanceof StagehandAdapterFailure && (error.code === "aborted" || error.code === "deadline_exceeded")) this.options.abortInference?.();
           if (error instanceof StagehandAdapterFailure) throw error;
           throw new StagehandAdapterFailure("provider_error", diagnoseProviderFailure(error));
         }
+        this.options.onActionEnd?.();
 
         const usage = resultMetrics(result);
         metrics.inputTokens += usage.inputTokens;

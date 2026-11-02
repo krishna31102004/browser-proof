@@ -18,6 +18,7 @@ import { executeStagehandRun, executeStagehandSameBrowserSmoke, stagehandPreflig
 import { validateStagehandArtifacts, validateStagehandSavedSchedule, validateStagehandSpikeArtifacts } from "./stagehand-artifact-validation.js";
 import { validateStagehandCampaignSchedules } from "./stagehand-campaign-schedules.js";
 import { registerUniqueStagehandCampaignRunId, stagehandCampaignTrialFailure, stagehandSingleRunExitCode } from "./stagehand-cli-policy.js";
+import type { StagehandInferenceTransport } from "./stagehand-network-policy.js";
 
 function argument(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -72,28 +73,31 @@ function validateStagehandFlags(allowed: ReadonlySet<string>, args: readonly str
   }
 }
 
-function stagehandRunConfiguration(): { model: "google/gemini-3.8-flash"; key: string } {
+function stagehandRunConfiguration(): { model: "google/gemini-3.8-flash"; key: string; inferenceTransport: StagehandInferenceTransport } {
   const model = argument("--model");
+  const requestedTransport = argument("--inference-transport", "native");
+  const inferenceTransport: StagehandInferenceTransport | undefined = requestedTransport === "native" ? "native_google_extension" : requestedTransport === "client-callback" ? "stagehand_client_callback_google" : undefined;
+  if (!inferenceTransport) throw new Error("--inference-transport must be native or client-callback");
   const providerApiKey = process.env.GEMINI_API_KEY;
   if (model !== "google/gemini-3.8-flash") throw new Error("Prompt 12B live runs require --model google/gemini-3.8-flash; paid/legacy models are disabled");
   validateStagehandSpendConfiguration({ model, allowFreeTierGemini: process.argv.includes("--allow-free-tier-gemini"), ...(providerApiKey ? { providerApiKey } : {}) });
-  return { model, key: providerApiKey! };
+  return { model, key: providerApiKey!, inferenceTransport };
 }
 
 async function runStagehandOnce(): Promise<number> {
-  validateStagehandFlags(new Set(["--scenario", "--adapter", "--mode", "--seed", "--model", "--allow-free-tier-gemini", "--expect-contract-violation"]), process.argv.slice(3));
+  validateStagehandFlags(new Set(["--scenario", "--adapter", "--mode", "--seed", "--model", "--inference-transport", "--allow-free-tier-gemini", "--expect-contract-violation"]), process.argv.slice(3));
   if (argument("--scenario") !== "supportdesk-refund-v1") throw new Error("Stagehand supports only --scenario supportdesk-refund-v1 in Prompt 12");
   const mode = argument("--mode") as RunMode | undefined; const seed = argument("--seed");
-  if ((mode !== "clean" && mode !== "faulted") || !seed) throw new Error("Usage: pnpm bp run --scenario supportdesk-refund-v1 --adapter stagehand-v4 --mode <clean|faulted> --seed <seed> --model google/gemini-3.8-flash --allow-free-tier-gemini");
+  if ((mode !== "clean" && mode !== "faulted") || !seed) throw new Error("Usage: pnpm bp run --scenario supportdesk-refund-v1 --adapter stagehand-v4 --mode <clean|faulted> --seed <seed> --model google/gemini-3.8-flash --inference-transport <native|client-callback> --allow-free-tier-gemini");
   const config = stagehandRunConfiguration();
   const expectViolation = process.argv.includes("--expect-contract-violation");
   if (expectViolation && mode !== "faulted") throw new Error("--expect-contract-violation is valid only for a faulted Stagehand run");
-  const run = await executeStagehandRun({ mode, seed, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true });
+  const run = await executeStagehandRun({ mode, seed, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport });
   const validation = await validateStagehandArtifacts(run.artifactDir, [config.key]);
   const contractViolationObserved = run.result.status === "contract_violation" && run.terminal.terminalOutcome === "contract_violation_observed" && run.terminal.quiescenceVerified && run.terminal.cleanupErrors.length === 0 && run.result.observerStatus === "complete";
   const terminalOutcome = contractViolationObserved ? "expected_violation_observed" : run.terminal.terminalOutcome;
   const exitReason = contractViolationObserved ? (expectViolation ? "explicit_expected_violation_assertion_satisfied" : "expected_violation_observed_without_assertion") : run.terminal.exitReason;
-  const json = { runId: run.result.runId, adapter: "stagehand-v4", provider: "google", model: config.model, status: run.result.status, executionStatus: run.result.status, taskCompleted: run.result.taskCompleted, effects: run.result.observedEffects.map(({ effectId, actionId, requestId }) => ({ effectId, actionId, requestId })), fault: run.result.fault, faultTriggered: run.result.fault.triggered, observerStatus: run.result.observerStatus, contractPassed: run.result.contract?.passed ?? null, artifactValid: validation.valid, terminalOutcome, exitReason, expectedViolationAsserted: expectViolation, validationErrors: validation.errors, artifactDir: run.artifactDir };
+  const json = { runId: run.result.runId, adapter: "stagehand-v4", provider: "google", model: config.model, inferenceTransport: config.inferenceTransport, status: run.result.status, executionStatus: run.result.status, taskCompleted: run.result.taskCompleted, effects: run.result.observedEffects.map(({ effectId, actionId, requestId }) => ({ effectId, actionId, requestId })), fault: run.result.fault, faultTriggered: run.result.fault.triggered, observerStatus: run.result.observerStatus, contractPassed: run.result.contract?.passed ?? null, artifactValid: validation.valid, terminalOutcome, exitReason, expectedViolationAsserted: expectViolation, validationErrors: validation.errors, artifactDir: run.artifactDir };
   console.log(JSON.stringify(json, null, 2));
   return stagehandSingleRunExitCode({ artifactValid: validation.valid, mode: run.result.mode, executionStatus: run.result.status, taskCompleted: run.result.taskCompleted, faultTriggered: run.result.fault.triggered, observerStatus: run.result.observerStatus, contractPassed: run.result.contract?.passed ?? null, terminalOutcome, expectedViolationAsserted: expectViolation, quiescenceVerified: run.terminal.quiescenceVerified, cleanupErrors: run.terminal.cleanupErrors });
 }
@@ -119,7 +123,16 @@ async function stagehandCommand(): Promise<number> {
   throw new Error("Usage: pnpm bp stagehand <preflight|spike>");
 }
 
-async function auditStagehandCampaignTrial(run: StagehandRunSummary, expectedMode: RunMode, secret: string, model: string): Promise<string | undefined> {
+function stagehandLiveProof(metadata: Record<string, unknown>, model: string, transport: StagehandInferenceTransport): boolean {
+  if (metadata.provider !== "google" || metadata.model !== model || metadata.inferenceTransport !== transport) return false;
+  if (transport === "stagehand_client_callback_google") {
+    const callback = metadata.providerCallback as Record<string, unknown> | undefined;
+    return callback?.transport === transport && callback.provider === "google" && callback.model === model && Number(callback.successfulResponses) > 0 && Number(metadata.liveInferenceCalls) === Number(callback.successfulResponses);
+  }
+  return Number(metadata.liveInferenceCalls) > 0;
+}
+
+async function auditStagehandCampaignTrial(run: StagehandRunSummary, expectedMode: RunMode, secret: string, model: string, transport: StagehandInferenceTransport): Promise<string | undefined> {
   const validation = await validateStagehandArtifacts(run.artifactDir, [secret]);
   if (!validation.valid) return "artifact_invalid";
   try {
@@ -139,7 +152,7 @@ async function auditStagehandCampaignTrial(run: StagehandRunSummary, expectedMod
       quiescenceVerified: run.terminal.quiescenceVerified,
       cleanupErrors: run.terminal.cleanupErrors,
       artifactValid: validation.valid,
-      trueModelProof: metadata.provider === "google" && metadata.model === model && Number(metadata.liveInferenceCalls) > 0,
+      trueModelProof: stagehandLiveProof(metadata, model, transport),
     });
   } catch {
     return "evidence_unreadable";
@@ -147,7 +160,7 @@ async function auditStagehandCampaignTrial(run: StagehandRunSummary, expectedMod
 }
 
 async function verifyStagehandCampaign(): Promise<number> {
-  validateStagehandFlags(new Set(["--scenario", "--allow-free-tier-gemini", "--model", "--max-model-runs", "--pilot-artifact"]), process.argv.slice(3));
+  validateStagehandFlags(new Set(["--scenario", "--allow-free-tier-gemini", "--model", "--inference-transport", "--max-model-runs", "--pilot-artifact"]), process.argv.slice(3));
   if (argument("--scenario") !== "stagehand-smoke") throw new Error("Usage: pnpm bp verify --scenario stagehand-smoke --allow-free-tier-gemini --max-model-runs 9 --model google/gemini-3.8-flash --pilot-artifact <validated-clean-pilot-dir>");
   const maximum = Number(argument("--max-model-runs"));
   if (maximum !== 9) throw new Error("Stagehand acceptance campaign requires an explicit maximum of exactly 9 model-backed runs (3 clean + 3 faulted + 3 fresh replays)");
@@ -159,9 +172,9 @@ async function verifyStagehandCampaign(): Promise<number> {
   const pilotMetadata = await readJson(resolve(pilotDir, "agent-metadata.json"));
   const pilotTerminal = await readJson(resolve(pilotDir, "terminal.json"));
   const pilot: StagehandRunSummary = { artifactDir: pilotDir, result: pilotResult as unknown as RunResult, metadataPath: resolve(pilotDir, "agent-metadata.json"), sameBrowserPath: resolve(pilotDir, "same-browser.json"), terminal: pilotTerminal as unknown as StagehandRunSummary["terminal"] };
-  const pilotFailure = await auditStagehandCampaignTrial(pilot, "clean", config.key, config.model);
+  const pilotFailure = await auditStagehandCampaignTrial(pilot, "clean", config.key, config.model, config.inferenceTransport);
   if (!pilotValidation.valid || pilotFailure) {
-    console.log(JSON.stringify({ pilotAccepted: false, artifactValid: pilotValidation.valid, pilotFailure: pilotFailure ?? null, validationErrors: pilotValidation.errors, runId: pilotResult.runId ?? null, status: pilotResult.status ?? null, taskCompleted: pilotResult.taskCompleted ?? null, observerStatus: pilotResult.observerStatus ?? null, trueModelProof: Number(pilotMetadata.liveInferenceCalls) > 0, artifactDir: pilotDir }, null, 2));
+    console.log(JSON.stringify({ pilotAccepted: false, artifactValid: pilotValidation.valid, pilotFailure: pilotFailure ?? null, validationErrors: pilotValidation.errors, runId: pilotResult.runId ?? null, status: pilotResult.status ?? null, taskCompleted: pilotResult.taskCompleted ?? null, observerStatus: pilotResult.observerStatus ?? null, trueModelProof: stagehandLiveProof(pilotMetadata, config.model, config.inferenceTransport), artifactDir: pilotDir }, null, 2));
     return 1;
   }
   const cleanRuns = [pilot] as Awaited<ReturnType<typeof executeStagehandRun>>[];
@@ -170,21 +183,21 @@ async function verifyStagehandCampaign(): Promise<number> {
   const campaignRunIds = new Set<string>([pilot.result.runId]);
   const auditNextCampaignTrial = async (run: StagehandRunSummary, expectedMode: RunMode) => {
     if (!registerUniqueStagehandCampaignRunId(run.result.runId, campaignRunIds)) return "duplicate_run_id";
-    return await auditStagehandCampaignTrial(run, expectedMode, config.key, config.model);
+    return await auditStagehandCampaignTrial(run, expectedMode, config.key, config.model, config.inferenceTransport);
   };
   let stopReason: string | undefined;
   for (let index = 2; index <= 3 && !stopReason; index += 1) {
-    const run = await executeStagehandRun({ mode: "clean", seed: `stagehand-clean-${index}`, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true });
+    const run = await executeStagehandRun({ mode: "clean", seed: `stagehand-clean-${index}`, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport });
     cleanRuns.push(run); const failure = await auditNextCampaignTrial(run, "clean"); if (failure) stopReason = `clean_${failure}`;
   }
   for (let index = 1; index <= 3 && !stopReason; index += 1) {
-    const run = await executeStagehandRun({ mode: "faulted", seed: `stagehand-faulted-${index}`, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true });
+    const run = await executeStagehandRun({ mode: "faulted", seed: `stagehand-faulted-${index}`, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport });
     faultedRuns.push(run); const failure = await auditNextCampaignTrial(run, "faulted"); if (failure) stopReason = `faulted_${failure}`;
   }
   if (stopReason) {
     const attempted = [...cleanRuns, ...faultedRuns];
     const checks = await Promise.all(attempted.map(({ artifactDir }) => validateStagehandArtifacts(artifactDir, [config.key])));
-    const proof = await Promise.all(attempted.map(async ({ artifactDir }) => { const metadata = await readJson(resolve(artifactDir, "agent-metadata.json")); return metadata.provider === "google" && metadata.model === config.model && Number(metadata.liveInferenceCalls) > 0; }));
+    const proof = await Promise.all(attempted.map(async ({ artifactDir }) => stagehandLiveProof(await readJson(resolve(artifactDir, "agent-metadata.json")), config.model, config.inferenceTransport)));
     const reportPath = resolve("artifacts", `stagehand-verification-${randomUUID()}.json`);
     const report = { schemaVersion: 1, campaign: "stagehand-v4-supportdesk", model: config.model, sdkVersion: STAGEHAND_SDK_VERSION, maxRuns: 9, attempts: attempted.length, stopReason, validatedArtifacts: checks.filter((check) => check.valid).length, trueModelProofRuns: proof.filter(Boolean).length, cleanTaskSuccesses: cleanRuns.filter(({ result }) => result.status === "passed" && result.taskCompleted && result.observerStatus === "complete").length, faultTriggers: faultedRuns.filter(({ result }) => result.fault.triggered).length, replayScheduleEquality: false, runIds: attempted.map(({ result }) => result.runId), outcomes: attempted.map(({ result, terminal }) => ({ runId: result.runId, mode: result.mode, status: result.status, terminalOutcome: terminal.terminalOutcome, taskCompleted: result.taskCompleted, faultTriggered: result.fault.triggered, observerStatus: result.observerStatus, contractPassed: result.contract?.passed ?? null, effects: result.observedEffects.map(({ effectId, actionId, requestId }) => ({ effectId, actionId, requestId })) })), artifacts: attempted.map(({ artifactDir }) => artifactDir), allAccepted: false };
     await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`); console.log(JSON.stringify({ ...report, reportPath }, null, 2)); return 1;
@@ -197,7 +210,7 @@ async function verifyStagehandCampaign(): Promise<number> {
   for (let index = 1; index <= 3 && !stopReason; index += 1) {
     const sourceSchedule = sourceSchedules[index - 1] as { seed: string; faults: FaultSchedule[] };
     const savedSchedule = sourceSchedule.faults[0]!;
-    const run = await executeStagehandRun({ mode: "faulted", seed: sourceSchedule.seed, schedule: savedSchedule, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true });
+    const run = await executeStagehandRun({ mode: "faulted", seed: sourceSchedule.seed, schedule: savedSchedule, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport });
     reproductionRuns.push(run); const failure = await auditNextCampaignTrial(run, "faulted"); if (failure) stopReason = `reproduction_${failure}`;
   }
   const all = [...cleanRuns, ...faultedRuns, ...reproductionRuns];
@@ -205,7 +218,7 @@ async function verifyStagehandCampaign(): Promise<number> {
   const validArtifacts = artifactChecks.filter((check) => check.valid).length;
   const modelProofs = await Promise.all(all.map(async ({ artifactDir }) => {
     const metadata = await readJson(resolve(artifactDir, "agent-metadata.json"));
-    return metadata.provider === "google" && metadata.model === config.model && Number(metadata.liveInferenceCalls) > 0;
+    return stagehandLiveProof(metadata, config.model, config.inferenceTransport);
   }));
   const faultedSchedules = await Promise.all(faultedRuns.map(async ({ artifactDir }) => readJson(resolve(artifactDir, "schedule.json"))));
   const reproductionSchedules = await Promise.all(reproductionRuns.map(async ({ artifactDir }) => readJson(resolve(artifactDir, "schedule.json"))));
@@ -564,7 +577,7 @@ async function reproduce(): Promise<number> {
 }
 
 async function reproduceStagehand(sourceDir: string, times: number): Promise<number> {
-  validateStagehandFlags(new Set(["--adapter", "--times", "--model", "--allow-free-tier-gemini"]), process.argv.slice(4));
+  validateStagehandFlags(new Set(["--adapter", "--times", "--model", "--inference-transport", "--allow-free-tier-gemini"]), process.argv.slice(4));
   if (times > 9) throw new Error("Stagehand replay count must be between 1 and 9");
   const config = stagehandRunConfiguration();
   const sourceValidation = await validateStagehandArtifacts(sourceDir, [config.key]);
@@ -576,8 +589,10 @@ async function reproduceStagehand(sourceDir: string, times: number): Promise<num
   if (!validateStagehandSavedSchedule(scheduleDoc, typeof scheduleDoc.seed === "string" ? scheduleDoc.seed : undefined)) throw new Error("Stagehand saved schedule does not match the supported response-loss workflow");
   const schedule = scheduleDoc.faults[0] as FaultSchedule;
   if (metadata.model !== config.model) throw new Error("Replay model must match the original Stagehand model");
+  const sourceTransport = metadata.inferenceTransport ?? "native_google_extension";
+  if (sourceTransport !== config.inferenceTransport) throw new Error("Replay inference transport must match the original Stagehand artifact");
   const runs = [] as Awaited<ReturnType<typeof executeStagehandRun>>[];
-  for (let index = 0; index < times; index += 1) runs.push(await executeStagehandRun({ mode: "faulted", seed: schedule.seed, schedule, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true }));
+  for (let index = 0; index < times; index += 1) runs.push(await executeStagehandRun({ mode: "faulted", seed: schedule.seed, schedule, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport }));
   let validCount = 0;
   for (const run of runs) {
     const validation = await validateStagehandArtifacts(run.artifactDir, [config.key]);

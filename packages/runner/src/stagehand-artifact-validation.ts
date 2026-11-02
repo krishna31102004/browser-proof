@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { evaluateRefundAtMostOnce, FAULT_SCHEDULE_REGISTRY } from "@browserproof/contracts";
 import { STAGEHAND_MAX_ACTIONS, stagehandModelConfiguration } from "./stagehand-adapter.js";
+import { STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT } from "./stagehand-gemini-callback.js";
+import type { StagehandInferenceTransport } from "./stagehand-network-policy.js";
 
 type ObjectValue = Record<string, unknown>;
 function isRecord(value: unknown): value is ObjectValue { return typeof value === "object" && value !== null && !Array.isArray(value); }
@@ -51,6 +53,9 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
     const modelConfiguration = stagehandModelConfiguration(String(metadata.model));
     if (manifest.adapterId !== "stagehand-v4" || metadata.adapterId !== "stagehand-v4" || metadata.mode !== "model-backed-stagehand" || metadata.sdkVersion !== "4.3.0" || !modelConfiguration || metadata.provider !== modelConfiguration.provider || metadata.providerModelId !== modelConfiguration.providerModelId) errors.push("Stagehand adapter/provider/model identity mismatch");
     if (metadata.provider !== "google" || metadata.model !== "google/gemini-3.8-flash") errors.push("Prompt 12B evidence must use the authorized Gemini model");
+    const inferenceTransport = (metadata.inferenceTransport ?? "native_google_extension") as StagehandInferenceTransport;
+    if (inferenceTransport !== "native_google_extension" && inferenceTransport !== "stagehand_client_callback_google") errors.push("inference transport identity is unsupported");
+    if (proof.inferenceTransport !== undefined && proof.inferenceTransport !== inferenceTransport) errors.push("same-browser proof and provider metadata disagree on inference transport");
     if (scenario.scenarioId !== "supportdesk-refund-v1" || scenario.orderId !== "A123" || schedule.mode !== result.mode || schedule.seed !== manifest.seed) errors.push("scenario or schedule identity mismatch");
     if (result.mode === "faulted" && !validateStagehandSavedSchedule(schedule, typeof manifest.seed === "string" ? manifest.seed : undefined)) errors.push("faulted saved schedule is invalid or mismatched");
     if (result.mode === "clean" && (!keysAre(schedule, ["schemaVersion", "mode", "seed", "faults"]) || schedule.schemaVersion !== "1.0.0" || !Array.isArray(schedule.faults) || schedule.faults.length !== 0)) errors.push("clean run must not include an active fault schedule or unknown schedule fields");
@@ -81,7 +86,7 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
     const requestRows = events.filter((event) => event.type === "network.request");
     const providerFailureBeforeActionResult = result.status === "browser_error" && result.agent && (result.agent as ObjectValue).error === "provider_error" && metadata.errorCode === "provider_error" && result.taskCompleted === false && resultRows.length === 0 && requestRows.length === 0 && Array.isArray(result.observedEffects) && result.observedEffects.length === 0 && metadata.liveInferenceCalls === 0;
     const missingResultCount = proposalRows.length - resultRows.length;
-    if (Number(metadata.stagehandActCalls) !== proposalRows.length || (missingResultCount !== 0 && !(providerFailureBeforeActionResult && missingResultCount === 1)) || Number(metadata.stagehandActCalls) > STAGEHAND_MAX_ACTIONS || Number(metadata.liveInferenceCalls) < 0 || Number(metadata.liveInferenceCalls) > Number(metadata.stagehandActCalls) || actionRows.length !== resultRows.length) errors.push("provider call/action evidence counts are inconsistent or exceed the six-act budget");
+    if (Number(metadata.stagehandActCalls) !== proposalRows.length || (missingResultCount !== 0 && !(providerFailureBeforeActionResult && missingResultCount === 1)) || Number(metadata.stagehandActCalls) > STAGEHAND_MAX_ACTIONS || Number(metadata.liveInferenceCalls) < 0 || (inferenceTransport === "native_google_extension" && Number(metadata.liveInferenceCalls) > Number(metadata.stagehandActCalls)) || actionRows.length !== resultRows.length) errors.push("provider call/action evidence counts are inconsistent or exceed the six-act budget");
     if (providerFailureBeforeActionResult) {
       const failureEvent = events.find((event) => event.type === "agent.error" && event.payload.code === "provider_error");
       const diagnostic = metadata.providerFailure;
@@ -133,7 +138,33 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
             : "agent_error";
       if (result.observerStatus !== "complete" || metadata.taskCompleted !== result.taskCompleted || result.status !== expectedStatus || result.observerStatus !== effects.observerStatus || !isRecord(result.agent) || result.agent.attempts !== metadata.stagehandActCalls) errors.push("saved task completion/status disagrees with model metadata, effects, or contract");
     }
-    if (typeof metadata.liveInferenceCalls !== "number" || metadata.liveInferenceCalls < 0 || metadata.liveInferenceCalls !== actionRows.filter((row) => row.payload?.cacheStatus !== "HIT" && Number((row.payload?.usage as ObjectValue | undefined)?.inputTokens ?? 0) + Number((row.payload?.usage as ObjectValue | undefined)?.outputTokens ?? 0) > 0).length) errors.push("live provider inference count is not supported by SDK usage evidence");
+    const sdkReported = isRecord(metadata.sdkReportedMetrics) ? metadata.sdkReportedMetrics : undefined;
+    const sdkReportedInferenceCalls = actionRows.filter((row) => row.payload?.cacheStatus !== "HIT" && Number((row.payload?.usage as ObjectValue | undefined)?.inputTokens ?? 0) + Number((row.payload?.usage as ObjectValue | undefined)?.outputTokens ?? 0) > 0).length;
+    if (sdkReported && (sdkReported.liveInferenceCalls !== sdkReportedInferenceCalls || sdkReported.inputTokens !== metadata.inputTokens || sdkReported.outputTokens !== metadata.outputTokens || sdkReported.inferenceTimeMs !== metadata.inferenceTimeMs)) errors.push("Stagehand SDK-reported metrics differ from action result telemetry");
+    if (inferenceTransport === "native_google_extension") {
+      if (typeof metadata.liveInferenceCalls !== "number" || metadata.liveInferenceCalls < 0 || metadata.liveInferenceCalls !== sdkReportedInferenceCalls || metadata.providerCallback !== undefined) errors.push("native provider inference count is not supported by native Stagehand usage evidence");
+    } else {
+      const callback = metadata.providerCallback as ObjectValue | undefined;
+      const requests = Array.isArray(callback?.requests) ? callback.requests as ObjectValue[] : [];
+      const callbackCountsValid = callback?.transport === inferenceTransport && callback.provider === "google" && callback.model === metadata.model && callback.requestLimit === STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT && callback.requestCount === requests.length && requests.length <= STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT && callback.successfulResponses === requests.filter((request) => request.status === "completed").length && callback.failedResponses === requests.filter((request) => request.status === "failed").length && callback.successfulResponses + callback.failedResponses === requests.length && metadata.liveInferenceCalls === callback.successfulResponses;
+      const requestIds = requests.map((request) => request.requestId);
+      if (!callbackCountsValid || requestIds.some((id) => typeof id !== "string") || new Set(requestIds).size !== requestIds.length) errors.push("client callback provider request counts, identity, or the six-request budget are invalid");
+      if (!sdkReported || sdkReported.liveInferenceCalls !== sdkReportedInferenceCalls) errors.push("client callback evidence omits distinct Stagehand SDK-reported metrics");
+      const providerEvents = events.filter((event) => event.type.startsWith("provider.inference_"));
+      if (providerEvents.length !== requests.length * 2) errors.push("client callback provider events do not contain one start and one terminal row per request");
+      for (const request of requests) {
+        const started = providerEvents.filter((event) => event.type === "provider.inference_started" && event.requestId === request.requestId);
+        const terminal = providerEvents.filter((event) => (event.type === "provider.inference_completed" || event.type === "provider.inference_failed") && event.requestId === request.requestId);
+        const matchingAction = proposalRows.find((event) => event.actionId === request.actionId);
+        const actionResult = resultRows.find((event) => event.actionId === request.actionId);
+        if (started.length !== 1 || terminal.length !== 1 || (request.actionId !== null && !matchingAction) || started[0]?.payload.transport !== inferenceTransport || terminal[0]?.payload.transport !== inferenceTransport || terminal[0]?.actionId !== started[0]?.actionId || terminal[0]?.actionId !== (request.actionId === null ? undefined : request.actionId) || events.indexOf(terminal[0]!) <= events.indexOf(started[0]!) || (matchingAction && events.indexOf(started[0]!) <= events.indexOf(matchingAction)) || (actionResult && events.indexOf(terminal[0]!) >= events.indexOf(actionResult))) errors.push("client callback request event correlation or order is invalid");
+        if (request.status === "completed" && (terminal[0]?.type !== "provider.inference_completed" || typeof request.httpStatus !== "number" || request.httpStatus < 200 || request.httpStatus >= 300)) errors.push("successful client callback lacks a successful provider response event");
+        if (request.status === "failed" && (terminal[0]?.type !== "provider.inference_failed" || !isRecord(request.error))) errors.push("failed client callback lacks sanitized provider failure evidence");
+      }
+      const usageRows = requests.map((request) => request.usageMetadata).filter(isRecord);
+      const usageTotals = isRecord(callback?.providerObservedUsage) ? callback.providerObservedUsage : undefined;
+      if (callback?.usageMetadataResponses !== usageRows.length || !usageTotals || ["promptTokenCount", "candidatesTokenCount", "totalTokenCount", "thoughtsTokenCount", "cachedContentTokenCount"].some((field) => !Number.isSafeInteger(usageTotals[field]) || Number(usageTotals[field]) !== usageRows.reduce((sum, usage) => sum + Number(usage[field] ?? 0), 0))) errors.push("client callback usage metadata totals do not match the raw provider response usage fields");
+    }
     const hasRefundRequest = requestRows.some((event) => typeof event.payload.url === "string" && new URL(event.payload.url).pathname === "/api/orders/A123/refund");
     const requiresBoundaryScreenshot = hasRefundRequest || triggerEvents.length > 0;
     const requiresAfterScreenshot = resultRows.length > 0 || hasRefundRequest || result.taskCompleted === true;
