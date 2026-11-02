@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { evaluateRefundAtMostOnce, FAULT_SCHEDULE_REGISTRY } from "@browserproof/contracts";
 import { STAGEHAND_MAX_ACTIONS, stagehandModelConfiguration } from "./stagehand-adapter.js";
-import { STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT } from "./stagehand-gemini-callback.js";
+import { STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT, STAGEHAND_GEMINI_CLIENT_ENDPOINTS } from "./stagehand-gemini-callback.js";
 import type { StagehandInferenceTransport } from "./stagehand-network-policy.js";
 
 type ObjectValue = Record<string, unknown>;
@@ -52,9 +52,12 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
     if (manifest.mode !== result.mode || manifest.scenarioId !== result.scenarioId || result.scenarioId !== "supportdesk-refund-v1") errors.push("manifest and result identity fields disagree");
     const modelConfiguration = stagehandModelConfiguration(String(metadata.model));
     if (manifest.adapterId !== "stagehand-v4" || metadata.adapterId !== "stagehand-v4" || metadata.mode !== "model-backed-stagehand" || metadata.sdkVersion !== "4.3.0" || !modelConfiguration || metadata.provider !== modelConfiguration.provider || metadata.providerModelId !== modelConfiguration.providerModelId) errors.push("Stagehand adapter/provider/model identity mismatch");
-    if (metadata.provider !== "google" || metadata.model !== "google/gemini-3.8-flash") errors.push("Prompt 12B evidence must use the authorized Gemini model");
+    if (metadata.provider !== "google" || (metadata.model !== "google/gemini-3.8-flash" && metadata.model !== "google/gemini-3.6-flash")) errors.push("Prompt 12B evidence must use an explicitly authorized Gemini model");
     const inferenceTransport = (metadata.inferenceTransport ?? "native_google_extension") as StagehandInferenceTransport;
     if (inferenceTransport !== "native_google_extension" && inferenceTransport !== "stagehand_client_callback_google") errors.push("inference transport identity is unsupported");
+    if (metadata.model === "google/gemini-3.6-flash" && inferenceTransport !== "stagehand_client_callback_google") errors.push("Gemini 3.6 Flash evidence requires the client-callback transport");
+    if (manifest.model !== undefined && (manifest.model !== metadata.model || manifest.provider !== metadata.provider || manifest.providerModelId !== metadata.providerModelId || manifest.inferenceTransport !== inferenceTransport)) errors.push("manifest and Stagehand model identity fields disagree");
+    if (metadata.model === "google/gemini-3.6-flash" && manifest.model !== metadata.model) errors.push("Gemini 3.6 Flash manifest must explicitly record its model identity");
     if (proof.inferenceTransport !== undefined && proof.inferenceTransport !== inferenceTransport) errors.push("same-browser proof and provider metadata disagree on inference transport");
     if (scenario.scenarioId !== "supportdesk-refund-v1" || scenario.orderId !== "A123" || schedule.mode !== result.mode || schedule.seed !== manifest.seed) errors.push("scenario or schedule identity mismatch");
     if (result.mode === "faulted" && !validateStagehandSavedSchedule(schedule, typeof manifest.seed === "string" ? manifest.seed : undefined)) errors.push("faulted saved schedule is invalid or mismatched");
@@ -163,7 +166,11 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
     } else {
       const callback = metadata.providerCallback as ObjectValue | undefined;
       const requests = Array.isArray(callback?.requests) ? callback.requests as ObjectValue[] : [];
-      const callbackCountsValid = callback?.transport === inferenceTransport && callback.provider === "google" && callback.model === metadata.model && callback.requestLimit === STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT && callback.requestCount === requests.length && requests.length <= STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT && callback.successfulResponses === requests.filter((request) => request.status === "completed").length && callback.failedResponses === requests.filter((request) => request.status === "failed").length && callback.successfulResponses + callback.failedResponses === requests.length && metadata.liveInferenceCalls === callback.successfulResponses;
+      const expectedEndpoint = typeof metadata.model === "string" ? STAGEHAND_GEMINI_CLIENT_ENDPOINTS[metadata.model as keyof typeof STAGEHAND_GEMINI_CLIENT_ENDPOINTS] : undefined;
+      const callbackEndpointValid = callback?.endpoint === undefined
+        ? metadata.model !== "google/gemini-3.6-flash"
+        : callback.endpoint === expectedEndpoint;
+      const callbackCountsValid = callback?.transport === inferenceTransport && callback.provider === "google" && callback.model === metadata.model && callbackEndpointValid && callback.requestLimit === STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT && callback.requestCount === requests.length && requests.length <= STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT && callback.successfulResponses === requests.filter((request) => request.status === "completed").length && callback.failedResponses === requests.filter((request) => request.status === "failed").length && callback.successfulResponses + callback.failedResponses === requests.length && metadata.liveInferenceCalls === callback.successfulResponses;
       const requestIds = requests.map((request) => request.requestId);
       if (!callbackCountsValid || requestIds.some((id) => typeof id !== "string") || new Set(requestIds).size !== requestIds.length) errors.push("client callback provider request counts, identity, or the six-request budget are invalid");
       if (!sdkReported || sdkReported.liveInferenceCalls !== sdkReportedInferenceCalls) errors.push("client callback evidence omits distinct Stagehand SDK-reported metrics");
@@ -175,7 +182,8 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
         const matchingAction = proposalRows.find((event) => event.actionId === request.actionId);
         const actionResult = resultRows.find((event) => event.actionId === request.actionId);
         const actionFailure = events.find((event) => event.type === "agent.error" && (event.actionId === request.actionId || (event.actionId == null && unmatchedProposal?.actionId === request.actionId && event.payload.attempts === metadata.stagehandActCalls)));
-        if (started.length !== 1 || terminal.length !== 1 || (request.actionId !== null && !matchingAction) || started[0]?.payload.transport !== inferenceTransport || terminal[0]?.payload.transport !== inferenceTransport || terminal[0]?.actionId !== started[0]?.actionId || terminal[0]?.actionId !== (request.actionId === null ? undefined : request.actionId) || events.indexOf(terminal[0]!) <= events.indexOf(started[0]!) || (matchingAction && events.indexOf(started[0]!) <= events.indexOf(matchingAction)) || (actionResult && events.indexOf(terminal[0]!) >= events.indexOf(actionResult)) || (!actionResult && actionFailure && events.indexOf(terminal[0]!) >= events.indexOf(actionFailure))) errors.push("client callback request event correlation or order is invalid");
+        const eventEndpointValid = expectedEndpoint !== undefined && [started[0]?.payload.endpoint, terminal[0]?.payload.endpoint].every((endpoint) => endpoint === undefined ? metadata.model !== "google/gemini-3.6-flash" : endpoint === expectedEndpoint);
+        if (started.length !== 1 || terminal.length !== 1 || !eventEndpointValid || (request.actionId !== null && !matchingAction) || started[0]?.payload.transport !== inferenceTransport || terminal[0]?.payload.transport !== inferenceTransport || started[0]?.payload.model !== metadata.model || terminal[0]?.payload.model !== metadata.model || terminal[0]?.actionId !== started[0]?.actionId || terminal[0]?.actionId !== (request.actionId === null ? undefined : request.actionId) || events.indexOf(terminal[0]!) <= events.indexOf(started[0]!) || (matchingAction && events.indexOf(started[0]!) <= events.indexOf(matchingAction)) || (actionResult && events.indexOf(terminal[0]!) >= events.indexOf(actionResult)) || (!actionResult && actionFailure && events.indexOf(terminal[0]!) >= events.indexOf(actionFailure))) errors.push("client callback request event correlation, endpoint, model identity, or order is invalid");
         if (request.status === "completed" && (terminal[0]?.type !== "provider.inference_completed" || typeof request.httpStatus !== "number" || request.httpStatus < 200 || request.httpStatus >= 300)) errors.push("successful client callback lacks a successful provider response event");
         if (request.status === "failed" && (terminal[0]?.type !== "provider.inference_failed" || !isRecord(request.error))) errors.push("failed client callback lacks sanitized provider failure evidence");
       }

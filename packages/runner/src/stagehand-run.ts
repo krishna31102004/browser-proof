@@ -9,7 +9,7 @@ import { ARTIFACT_SCHEMA_VERSION, evaluateRefundAtMostOnce, FAULT_SCHEDULE_REGIS
 import { startSupportDesk, type SupportDeskServer } from "@browserproof/demo-support";
 import { EventWriter } from "./event-writer.js";
 import { validateStagehandSavedSchedule } from "./stagehand-artifact-validation.js";
-import { StagehandV4AgentAdapter, STAGEHAND_ACT_ADAPTER_DEADLINE_MS, STAGEHAND_MAX_ACTIONS, STAGEHAND_SDK_VERSION, sanitizeStagehandText, stagehandModelConfiguration, validateStagehandSpendConfiguration, type ApprovedStagehandModel } from "./stagehand-adapter.js";
+import { APPROVED_GEMINI_STAGEHAND_MODELS, StagehandV4AgentAdapter, STAGEHAND_ACT_ADAPTER_DEADLINE_MS, STAGEHAND_MAX_ACTIONS, STAGEHAND_SDK_VERSION, sanitizeStagehandText, stagehandModelConfiguration, validateStagehandSpendConfiguration, type ApprovedGeminiStagehandModel, type ApprovedStagehandModel } from "./stagehand-adapter.js";
 import { createStagehandGeminiCallback, type GeminiCallbackMetrics } from "./stagehand-gemini-callback.js";
 import { isAllowedNativeGeminiWorkerRequest, type StagehandInferenceTransport } from "./stagehand-network-policy.js";
 import type { AgentEventEmitter, AgentTaskOutcome } from "./agent-adapter.js";
@@ -114,6 +114,9 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   }
   const model = options.model;
   const modelConfiguration = stagehandModelConfiguration(model)!;
+  const inferenceTransport = options.inferenceTransport ?? "native_google_extension";
+  if (model === "google/gemini-3.6-flash" && inferenceTransport !== "stagehand_client_callback_google") throw new Error("Gemini 3.6 Flash is supported only through the client-callback transport");
+  if (inferenceTransport !== "native_google_extension" && inferenceTransport !== "stagehand_client_callback_google") throw new Error("Unsupported Stagehand inference transport");
   const runId = randomUUID();
   const root = resolve(options.artifactRoot ?? fileURLToPath(new URL("../../../artifacts", import.meta.url)));
   const { artifactDir, screenshotsDir } = await createStagehandArtifactDirectories(root, runId);
@@ -130,8 +133,6 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   let stagehand: Stagehand | undefined;
   let adapter: StagehandV4AgentAdapter | undefined;
   let geminiCallback: ReturnType<typeof createStagehandGeminiCallback> | undefined;
-  const inferenceTransport = options.inferenceTransport ?? "native_google_extension";
-  if (inferenceTransport !== "native_google_extension" && inferenceTransport !== "stagehand_client_callback_google") throw new Error("Unsupported Stagehand inference transport");
   let playwrightBrowser: Browser | undefined;
   let context: Awaited<ReturnType<Browser["newContext"]>> | undefined;
   let traceStarted = false;
@@ -187,6 +188,7 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
     if (inferenceTransport === "stagehand_client_callback_google") {
       geminiCallback = createStagehandGeminiCallback({
         apiKey: options.providerApiKey,
+        model: model as ApprovedGeminiStagehandModel,
         onEvent: async (type, payload, correlation) => { await recordEvent("agent", type, payload, correlation); },
       });
       stagehand = await Stagehand.create({ browser: stagehandBrowser, model: geminiCallback.clientLLM, logging: { level: "off" } });
@@ -388,7 +390,7 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   await writeFile(join(artifactDir, "effects.json"), `${JSON.stringify({ schemaVersion: ARTIFACT_SCHEMA_VERSION, runId, observerStatus, effects }, null, 2)}\n`);
   await writeFile(join(artifactDir, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
   await writeFile(join(artifactDir, "terminal.json"), `${JSON.stringify(terminal, null, 2)}\n`);
-  const manifest = { schemaVersion: ARTIFACT_SCHEMA_VERSION, runId, scenarioId: result.scenarioId, mode: result.mode, seed: options.seed, startedAt, completedAt: new Date().toISOString(), adapterId: "stagehand-v4", artifactFiles: ["manifest.json", "scenario.json", "schedule.json", "events.jsonl", "effects.json", "result.json", "trace.zip", "screenshots", "agent-metadata.json", "model-actions.jsonl", "same-browser.json", "terminal.json"] };
+  const manifest = { schemaVersion: ARTIFACT_SCHEMA_VERSION, runId, scenarioId: result.scenarioId, mode: result.mode, seed: options.seed, startedAt, completedAt: new Date().toISOString(), adapterId: "stagehand-v4", provider: modelConfiguration.provider, model, providerModelId: modelConfiguration.providerModelId, inferenceTransport, artifactFiles: ["manifest.json", "scenario.json", "schedule.json", "events.jsonl", "effects.json", "result.json", "trace.zip", "screenshots", "agent-metadata.json", "model-actions.jsonl", "same-browser.json", "terminal.json"] };
   await writeFile(join(artifactDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   if (!sameBrowserProof) await writeFile(join(artifactDir, "same-browser.json"), `${JSON.stringify({ schemaVersion: 1, provenBeforeModelCall: false }, null, 2)}\n`);
   return { artifactDir, result, metadataPath: join(artifactDir, "agent-metadata.json"), sameBrowserPath: join(artifactDir, "same-browser.json"), terminal };
@@ -435,7 +437,7 @@ export async function stagehandPreflight(): Promise<Record<string, unknown>> {
   const executable = chromium.executablePath();
   let chromiumInstalled = false;
   try { chromiumInstalled = (await stat(executable)).isFile(); } catch { chromiumInstalled = false; }
-  return { sdkVersion: STAGEHAND_SDK_VERSION, nodeVersion: process.versions.node, nodeCompatible: Number(process.versions.node.split(".")[0]) > 22 || Number(process.versions.node.split(".")[0]) === 22 && Number(process.versions.node.split(".")[1]) >= 18, chromiumExecutableConfigured: true, chromiumInstalled, modelArgumentRequired: true, provider: "google", model: "google/gemini-3.8-flash", providerCredentialConfigured: Boolean(process.env.GEMINI_API_KEY), runnerBillingPolicy: "free-tier-only-no-fallback", accountFreeTierVerified: false, inferencePerformed: false };
+  return { sdkVersion: STAGEHAND_SDK_VERSION, nodeVersion: process.versions.node, nodeCompatible: Number(process.versions.node.split(".")[0]) > 22 || Number(process.versions.node.split(".")[0]) === 22 && Number(process.versions.node.split(".")[1]) >= 18, chromiumExecutableConfigured: true, chromiumInstalled, modelArgumentRequired: true, provider: "google", model: "google/gemini-3.8-flash", approvedModels: [...APPROVED_GEMINI_STAGEHAND_MODELS], providerCredentialConfigured: Boolean(process.env.GEMINI_API_KEY), runnerBillingPolicy: "free-tier-only-no-fallback", accountFreeTierVerified: false, inferencePerformed: false };
 }
 
 export function stagehandOutcomeSignature(result: RunResult): string { return normalizeOutcome(result.status, result.observedEffects); }

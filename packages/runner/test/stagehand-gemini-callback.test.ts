@@ -9,6 +9,7 @@ import {
   STAGEHAND_GEMINI_MAX_503_RETRIES,
   STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT,
   STAGEHAND_GEMINI_CLIENT_ENDPOINT,
+  STAGEHAND_GEMINI_CLIENT_ENDPOINTS,
   StagehandGeminiCallbackError,
   validateJsonSchemaValue,
   type StagehandLLMGenerateParams,
@@ -74,6 +75,22 @@ describe("Stagehand 4.3.0 Gemini client callback (offline only)", () => {
     expect(events.every((event) => event.correlation.actionId === "action-1")).toBe(true);
     expect(JSON.stringify(events)).not.toContain(TEST_KEY);
     expect(JSON.stringify(events)).not.toContain("Inspect the visible refund form");
+  });
+
+  it("uses the explicit Gemini 3.6 Flash endpoint and preserves its distinct model identity", async () => {
+    const calls: string[] = [];
+    const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const callback = createStagehandGeminiCallback({
+      apiKey: TEST_KEY,
+      model: "google/gemini-3.6-flash",
+      fetchImpl: async (url) => { calls.push(String(url)); return providerResponse(); },
+      onEvent: (type, payload) => { events.push({ type, payload }); },
+    });
+    await callback.clientLLM.generate(params);
+    expect(STAGEHAND_GEMINI_CLIENT_ENDPOINTS["google/gemini-3.6-flash"]).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent");
+    expect(calls).toEqual([STAGEHAND_GEMINI_CLIENT_ENDPOINTS["google/gemini-3.6-flash"]]);
+    expect(callback.snapshot()).toMatchObject({ model: "google/gemini-3.6-flash", requestCount: 1, successfulResponses: 1 });
+    expect(events.every((event) => event.payload.model === "google/gemini-3.6-flash")).toBe(true);
   });
 
   it("validates structured JSON against Stagehand's requested schema and rejects malformed or mismatched responses", async () => {

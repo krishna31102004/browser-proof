@@ -7,6 +7,7 @@ import {
   type AgentTaskInput,
 } from "../src/agent-adapter.js";
 import {
+  APPROVED_GEMINI_STAGEHAND_MODELS,
   STAGEHAND_MODEL_CONFIGURATIONS,
   STAGEHAND_ACT_ADAPTER_DEADLINE_MS,
   STAGEHAND_ACT_TIMEOUT_MS,
@@ -83,6 +84,8 @@ function setup(options: {
 describe("Stagehand v4 adapter mocked plumbing (not live provider proof)", () => {
   it("maps the exact Gemini provider/key and requires explicit free-tier authorization without exposing credentials", () => {
     expect(STAGEHAND_MODEL_CONFIGURATIONS[0]).toEqual({ provider: "google", model: "google/gemini-3.8-flash", providerModelId: "gemini-3.8-flash", keyEnvironmentVariable: "GEMINI_API_KEY", authorization: "free-tier-only" });
+    expect(STAGEHAND_MODEL_CONFIGURATIONS[1]).toEqual({ provider: "google", model: "google/gemini-3.6-flash", providerModelId: "gemini-3.6-flash", keyEnvironmentVariable: "GEMINI_API_KEY", authorization: "free-tier-only" });
+    expect(APPROVED_GEMINI_STAGEHAND_MODELS).toEqual(["google/gemini-3.8-flash", "google/gemini-3.6-flash"]);
     expect(() => validateStagehandSpendConfiguration({ model: "google/gemini-3.8-flash", allowFreeTierGemini: false, providerApiKey: MOCK_KEY }))
       .toThrowError(new StagehandConfigurationError("free_tier_opt_in_required"));
     expect(() => validateStagehandSpendConfiguration({ model: "google/gemini-3.8-flash", allowFreeTierGemini: true }))
@@ -92,6 +95,7 @@ describe("Stagehand v4 adapter mocked plumbing (not live provider proof)", () =>
     expect(() => validateStagehandSpendConfiguration({ model: "openai/gpt-5.4-mini", allowFreeTierGemini: true, providerApiKey: MOCK_KEY }))
       .toThrowError(new StagehandConfigurationError("provider_not_enabled"));
     expect(() => validateStagehandSpendConfiguration({ model: "google/gemini-3.8-flash", allowFreeTierGemini: true, providerApiKey: MOCK_KEY })).not.toThrow();
+    expect(() => validateStagehandSpendConfiguration({ model: "google/gemini-3.6-flash", allowFreeTierGemini: true, providerApiKey: MOCK_KEY })).not.toThrow();
     try {
       validateStagehandSpendConfiguration({ model: "google/gemini-3.8-flash", allowFreeTierGemini: false, providerApiKey: MOCK_KEY });
     } catch (error) {

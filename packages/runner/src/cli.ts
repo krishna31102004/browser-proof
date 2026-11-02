@@ -13,7 +13,7 @@ import { contextFaultReproductionIdsAreFresh, createContextFaultSchedule, execut
 import { createShopSchedule, executeShopRun, shopSignature, validateShopArtifacts, validateShopSchedule, type ShopRunResult } from "./shop-run.js";
 import { validateRunArtifacts } from "./run-artifact-validation.js";
 import type { ShopAgentPolicy, ShopBenchFaultSchedule, ShopWorkflowId } from "@browserproof/contracts";
-import { APPROVED_STAGEHAND_MODELS, STAGEHAND_SDK_VERSION, validateStagehandSpendConfiguration } from "./stagehand-adapter.js";
+import { APPROVED_GEMINI_STAGEHAND_MODELS, STAGEHAND_SDK_VERSION, validateStagehandSpendConfiguration, type ApprovedGeminiStagehandModel } from "./stagehand-adapter.js";
 import { executeStagehandRun, executeStagehandSameBrowserSmoke, stagehandPreflight, type StagehandRunSummary } from "./stagehand-run.js";
 import { validateStagehandArtifacts, validateStagehandSavedSchedule, validateStagehandSpikeArtifacts } from "./stagehand-artifact-validation.js";
 import { validateStagehandCampaignSchedules } from "./stagehand-campaign-schedules.js";
@@ -73,22 +73,24 @@ function validateStagehandFlags(allowed: ReadonlySet<string>, args: readonly str
   }
 }
 
-function stagehandRunConfiguration(): { model: "google/gemini-3.8-flash"; key: string; inferenceTransport: StagehandInferenceTransport } {
+function stagehandRunConfiguration(): { model: ApprovedGeminiStagehandModel; key: string; inferenceTransport: StagehandInferenceTransport } {
   const model = argument("--model");
   const requestedTransport = argument("--inference-transport", "native");
   const inferenceTransport: StagehandInferenceTransport | undefined = requestedTransport === "native" ? "native_google_extension" : requestedTransport === "client-callback" ? "stagehand_client_callback_google" : undefined;
   if (!inferenceTransport) throw new Error("--inference-transport must be native or client-callback");
   const providerApiKey = process.env.GEMINI_API_KEY;
-  if (model !== "google/gemini-3.8-flash") throw new Error("Prompt 12B live runs require --model google/gemini-3.8-flash; paid/legacy models are disabled");
-  validateStagehandSpendConfiguration({ model, allowFreeTierGemini: process.argv.includes("--allow-free-tier-gemini"), ...(providerApiKey ? { providerApiKey } : {}) });
-  return { model, key: providerApiKey!, inferenceTransport };
+  const approvedModel = APPROVED_GEMINI_STAGEHAND_MODELS.find((candidate) => candidate === model);
+  if (!approvedModel) throw new Error("Prompt 12B live runs support only --model google/gemini-3.8-flash or google/gemini-3.6-flash; paid/legacy models are disabled");
+  if (approvedModel === "google/gemini-3.6-flash" && inferenceTransport !== "stagehand_client_callback_google") throw new Error("Gemini 3.6 Flash requires --inference-transport client-callback");
+  validateStagehandSpendConfiguration({ model: approvedModel, allowFreeTierGemini: process.argv.includes("--allow-free-tier-gemini"), ...(providerApiKey ? { providerApiKey } : {}) });
+  return { model: approvedModel, key: providerApiKey!, inferenceTransport };
 }
 
 async function runStagehandOnce(): Promise<number> {
   validateStagehandFlags(new Set(["--scenario", "--adapter", "--mode", "--seed", "--model", "--inference-transport", "--allow-free-tier-gemini", "--expect-contract-violation"]), process.argv.slice(3));
   if (argument("--scenario") !== "supportdesk-refund-v1") throw new Error("Stagehand supports only --scenario supportdesk-refund-v1 in Prompt 12");
   const mode = argument("--mode") as RunMode | undefined; const seed = argument("--seed");
-  if ((mode !== "clean" && mode !== "faulted") || !seed) throw new Error("Usage: pnpm bp run --scenario supportdesk-refund-v1 --adapter stagehand-v4 --mode <clean|faulted> --seed <seed> --model google/gemini-3.8-flash --inference-transport <native|client-callback> --allow-free-tier-gemini");
+  if ((mode !== "clean" && mode !== "faulted") || !seed) throw new Error("Usage: pnpm bp run --scenario supportdesk-refund-v1 --adapter stagehand-v4 --mode <clean|faulted> --seed <seed> --model <google/gemini-3.8-flash|google/gemini-3.6-flash> --inference-transport <native|client-callback> --allow-free-tier-gemini");
   const config = stagehandRunConfiguration();
   const expectViolation = process.argv.includes("--expect-contract-violation");
   if (expectViolation && mode !== "faulted") throw new Error("--expect-contract-violation is valid only for a faulted Stagehand run");
@@ -106,7 +108,7 @@ async function stagehandCommand(): Promise<number> {
   const subcommand = process.argv[3];
   if (subcommand === "preflight") {
     validateStagehandFlags(new Set(), process.argv.slice(4));
-    const result = await stagehandPreflight(); console.log(JSON.stringify({ ...result, approvedModels: ["google/gemini-3.8-flash"], pinnedSdk: STAGEHAND_SDK_VERSION }, null, 2));
+    const result = await stagehandPreflight(); console.log(JSON.stringify({ ...result, approvedModels: [...APPROVED_GEMINI_STAGEHAND_MODELS], pinnedSdk: STAGEHAND_SDK_VERSION }, null, 2));
     return result.nodeCompatible === true && result.chromiumInstalled === true ? 0 : 1;
   }
   if (subcommand === "spike") {
@@ -161,7 +163,7 @@ async function auditStagehandCampaignTrial(run: StagehandRunSummary, expectedMod
 
 async function verifyStagehandCampaign(): Promise<number> {
   validateStagehandFlags(new Set(["--scenario", "--allow-free-tier-gemini", "--model", "--inference-transport", "--max-model-runs", "--pilot-artifact"]), process.argv.slice(3));
-  if (argument("--scenario") !== "stagehand-smoke") throw new Error("Usage: pnpm bp verify --scenario stagehand-smoke --allow-free-tier-gemini --max-model-runs 9 --model google/gemini-3.8-flash --pilot-artifact <validated-clean-pilot-dir>");
+  if (argument("--scenario") !== "stagehand-smoke") throw new Error("Usage: pnpm bp verify --scenario stagehand-smoke --allow-free-tier-gemini --max-model-runs 9 --model <google/gemini-3.8-flash|google/gemini-3.6-flash> --inference-transport client-callback --pilot-artifact <validated-clean-pilot-dir>");
   const maximum = Number(argument("--max-model-runs"));
   if (maximum !== 9) throw new Error("Stagehand acceptance campaign requires an explicit maximum of exactly 9 model-backed runs (3 clean + 3 faulted + 3 fresh replays)");
   const config = stagehandRunConfiguration();

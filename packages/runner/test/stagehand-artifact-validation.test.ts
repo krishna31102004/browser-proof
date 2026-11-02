@@ -8,7 +8,7 @@ import { stagehandModelConfiguration } from "../src/stagehand-adapter.js";
 import { validateStagehandArtifacts } from "../src/stagehand-artifact-validation.js";
 import { stagehandSingleRunExitCode } from "../src/stagehand-cli-policy.js";
 import { executeStagehandSameBrowserSmoke } from "../src/stagehand-run.js";
-import { createStagehandGeminiCallback, type StagehandLLMGenerateParams } from "../src/stagehand-gemini-callback.js";
+import { createStagehandGeminiCallback, STAGEHAND_GEMINI_CLIENT_ENDPOINTS, type StagehandLLMGenerateParams } from "../src/stagehand-gemini-callback.js";
 
 const TEST_CANARY = "sk-browserproof-private-test-canary-123456";
 type JsonObject = Record<string, any>;
@@ -73,7 +73,7 @@ describe("Stagehand artifact validation (mocked evidence fixtures only; not live
       metadata.liveInferenceCalls = 1;
       metadata.sdkReportedMetrics = { stagehandActCalls: 1, liveInferenceCalls: 1, actionExecutions: 1, inputTokens: 12, outputTokens: 3, reasoningTokens: 0, inferenceTimeMs: 24, lateResultsDiscarded: 0 };
       metadata.providerCallback = {
-        transport: "stagehand_client_callback_google", provider: "google", model: "google/gemini-3.8-flash", requestLimit: 6,
+        transport: "stagehand_client_callback_google", provider: "google", model: "google/gemini-3.8-flash", endpoint: STAGEHAND_GEMINI_CLIENT_ENDPOINTS["google/gemini-3.8-flash"], requestLimit: 6,
         requestCount: 1, successfulResponses: 1, failedResponses: 0, usageMetadataResponses: 1, totalLatencyMs: 51,
         providerObservedUsage: { promptTokenCount: 9, candidatesTokenCount: 4, totalTokenCount: 13, thoughtsTokenCount: 2, cachedContentTokenCount: 1 },
         requests: [{ requestId, actionId, status: "completed", httpStatus: 200, latencyMs: 51, finishReason: "STOP", usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 4, totalTokenCount: 13, thoughtsTokenCount: 2, cachedContentTokenCount: 1 } }],
@@ -82,12 +82,41 @@ describe("Stagehand artifact validation (mocked evidence fixtures only; not live
       await mutateJson(join(bundle, "same-browser.json"), (proof) => { proof.inferenceTransport = "stagehand_client_callback_google"; });
       const proposalIndex = events.findIndex((event) => event.type === "agent.action_proposed");
       events.splice(proposalIndex + 1, 0,
-        { eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", sequence: 0, timestamp: new Date().toISOString(), monotonicMs: 4, source: "agent", type: "provider.inference_started", requestId, actionId, payload: { transport: "stagehand_client_callback_google", provider: "google", model: "google/gemini-3.8-flash" } },
-        { eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", sequence: 0, timestamp: new Date().toISOString(), monotonicMs: 55, source: "agent", type: "provider.inference_completed", requestId, actionId, payload: { transport: "stagehand_client_callback_google", provider: "google", model: "google/gemini-3.8-flash", httpStatus: 200, latencyMs: 51, finishReason: "STOP", usage: metadata.providerCallback.requests[0].usageMetadata } },
+        { eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", sequence: 0, timestamp: new Date().toISOString(), monotonicMs: 4, source: "agent", type: "provider.inference_started", requestId, actionId, payload: { transport: "stagehand_client_callback_google", provider: "google", model: "google/gemini-3.8-flash", endpoint: STAGEHAND_GEMINI_CLIENT_ENDPOINTS["google/gemini-3.8-flash"] } },
+        { eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", sequence: 0, timestamp: new Date().toISOString(), monotonicMs: 55, source: "agent", type: "provider.inference_completed", requestId, actionId, payload: { transport: "stagehand_client_callback_google", provider: "google", model: "google/gemini-3.8-flash", endpoint: STAGEHAND_GEMINI_CLIENT_ENDPOINTS["google/gemini-3.8-flash"], httpStatus: 200, latencyMs: 51, finishReason: "STOP", usage: metadata.providerCallback.requests[0].usageMetadata } },
       );
       events.forEach((event, index) => { event.sequence = index + 1; });
       await writeFile(eventPath, events.map((event) => JSON.stringify(event)).join("\n") + "\n");
       expect(await validateStagehandArtifacts(bundle)).toEqual({ valid: true, errors: [] });
+      const gemini36Bundle = join(temp, "gemini-3.6-callback-evidence");
+      await cp(bundle, gemini36Bundle, { recursive: true });
+      await mutateJson(join(gemini36Bundle, "agent-metadata.json"), (data) => {
+        data.model = "google/gemini-3.6-flash";
+        data.providerModelId = "gemini-3.6-flash";
+        data.providerCallback.model = "google/gemini-3.6-flash";
+        data.providerCallback.endpoint = STAGEHAND_GEMINI_CLIENT_ENDPOINTS["google/gemini-3.6-flash"];
+      });
+      await mutateJson(join(gemini36Bundle, "manifest.json"), (manifest) => Object.assign(manifest, {
+        provider: "google", model: "google/gemini-3.6-flash", providerModelId: "gemini-3.6-flash", inferenceTransport: "stagehand_client_callback_google",
+      }));
+      const gemini36EventsPath = join(gemini36Bundle, "events.jsonl");
+      const gemini36Events = (await readFile(gemini36EventsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as JsonObject);
+      for (const event of gemini36Events.filter((item) => item.type.startsWith("provider.inference_"))) {
+        event.payload.model = "google/gemini-3.6-flash";
+        event.payload.endpoint = STAGEHAND_GEMINI_CLIENT_ENDPOINTS["google/gemini-3.6-flash"];
+      }
+      await writeFile(gemini36EventsPath, gemini36Events.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      expect(await validateStagehandArtifacts(gemini36Bundle)).toEqual({ valid: true, errors: [] });
+      await cp(gemini36Bundle, join(temp, "cross-model-manifest"), { recursive: true });
+      await mutateJson(join(temp, "cross-model-manifest", "manifest.json"), (manifest) => { manifest.model = "google/gemini-3.8-flash"; });
+      expect((await validateStagehandArtifacts(join(temp, "cross-model-manifest"))).valid).toBe(false);
+      await cp(gemini36Bundle, join(temp, "cross-model-event"), { recursive: true });
+      const crossModelEventPath = join(temp, "cross-model-event", "events.jsonl");
+      const crossModelEvents = (await readFile(crossModelEventPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as JsonObject);
+      const providerEvent = crossModelEvents.find((event) => event.type === "provider.inference_started");
+      providerEvent!.payload.model = "google/gemini-3.8-flash";
+      await writeFile(crossModelEventPath, crossModelEvents.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      expect((await validateStagehandArtifacts(join(temp, "cross-model-event"))).valid).toBe(false);
       await cp(bundle, join(temp, "duplicate-id"), { recursive: true });
       await mutateJson(join(temp, "duplicate-id", "agent-metadata.json"), (data) => { data.providerCallback.requests.push({ ...data.providerCallback.requests[0] }); data.providerCallback.requestCount = 2; data.providerCallback.successfulResponses = 2; data.liveInferenceCalls = 2; });
       expect((await validateStagehandArtifacts(join(temp, "duplicate-id"))).valid).toBe(false);

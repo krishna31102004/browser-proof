@@ -13,10 +13,13 @@ export const STAGEHAND_ACT_ADAPTER_DEADLINE_MS = STAGEHAND_ACT_TIMEOUT_MS + STAG
 /** Exact model/provider pairs supported by the pinned Stagehand v4 API shape. */
 export const STAGEHAND_MODEL_CONFIGURATIONS = [
   { provider: "google", model: "google/gemini-3.8-flash", providerModelId: "gemini-3.8-flash", keyEnvironmentVariable: "GEMINI_API_KEY", authorization: "free-tier-only" },
+  { provider: "google", model: "google/gemini-3.6-flash", providerModelId: "gemini-3.6-flash", keyEnvironmentVariable: "GEMINI_API_KEY", authorization: "free-tier-only" },
   // Kept for reading/validating legacy Prompt 12 artifacts. Prompt 12B never invokes it.
   { provider: "openai", model: "openai/gpt-5.4-mini", providerModelId: "gpt-5.4-mini", keyEnvironmentVariable: "OPENAI_API_KEY", authorization: "legacy-paid" },
 ] as const;
-export const APPROVED_STAGEHAND_MODELS = ["google/gemini-3.8-flash", "openai/gpt-5.4-mini"] as const;
+export const APPROVED_GEMINI_STAGEHAND_MODELS = ["google/gemini-3.8-flash", "google/gemini-3.6-flash"] as const;
+export const APPROVED_STAGEHAND_MODELS = [...APPROVED_GEMINI_STAGEHAND_MODELS, "openai/gpt-5.4-mini"] as const;
+export type ApprovedGeminiStagehandModel = (typeof APPROVED_GEMINI_STAGEHAND_MODELS)[number];
 export type ApprovedStagehandModel = (typeof STAGEHAND_MODEL_CONFIGURATIONS)[number]["model"];
 export type StagehandProvider = (typeof STAGEHAND_MODEL_CONFIGURATIONS)[number]["provider"];
 export type StagehandModelConfiguration = (typeof STAGEHAND_MODEL_CONFIGURATIONS)[number];

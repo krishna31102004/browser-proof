@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { ClientLLM } from "@browserbasehq/stagehand";
-import type { ProviderFailureDiagnostic } from "./stagehand-adapter.js";
+import type { ApprovedGeminiStagehandModel, ProviderFailureDiagnostic } from "./stagehand-adapter.js";
 
 export const STAGEHAND_GEMINI_CLIENT_MODEL = "google/gemini-3.8-flash" as const;
 export const STAGEHAND_GEMINI_CLIENT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
+export const STAGEHAND_GEMINI_CLIENT_ENDPOINTS: Record<ApprovedGeminiStagehandModel, string> = {
+  "google/gemini-3.8-flash": STAGEHAND_GEMINI_CLIENT_ENDPOINT,
+  "google/gemini-3.6-flash": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+};
 export const STAGEHAND_GEMINI_CALLBACK_TIMEOUT_MS = 80_000;
 export const STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT = 6;
 export const STAGEHAND_GEMINI_MAX_OUTPUT_TOKENS = 1_024;
@@ -34,7 +38,8 @@ export interface GeminiCallbackRequestEvidence {
 export interface GeminiCallbackMetrics {
   transport: "stagehand_client_callback_google";
   provider: "google";
-  model: typeof STAGEHAND_GEMINI_CLIENT_MODEL;
+  model: ApprovedGeminiStagehandModel;
+  endpoint: string;
   requestLimit: number;
   requestCount: number;
   successfulResponses: number;
@@ -53,6 +58,7 @@ export interface GeminiCallbackMetrics {
 
 export interface GeminiCallbackOptions {
   apiKey: string;
+  model?: ApprovedGeminiStagehandModel;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   retrySleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
@@ -280,6 +286,9 @@ function parseGoogleResponse(body: unknown, params: StagehandLLMGenerateParams):
 
 export function createStagehandGeminiCallback(options: GeminiCallbackOptions): StagehandGeminiCallback {
   if (!options.apiKey.trim()) throw new StagehandGeminiCallbackError("provider_error", providerDiagnostic(null, "authentication_or_access", "provider credential missing"));
+  const model = options.model ?? STAGEHAND_GEMINI_CLIENT_MODEL;
+  const endpoint = STAGEHAND_GEMINI_CLIENT_ENDPOINTS[model];
+  if (!endpoint) throw new RangeError("Unsupported Gemini callback model");
   const limit = options.requestLimit ?? STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT;
   const timeoutMs = options.timeoutMs ?? STAGEHAND_GEMINI_CALLBACK_TIMEOUT_MS;
   if (!Number.isInteger(limit) || limit < 1 || limit > STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > STAGEHAND_GEMINI_CALLBACK_TIMEOUT_MS) throw new RangeError("Invalid bounded Gemini callback limits");
@@ -290,7 +299,7 @@ export function createStagehandGeminiCallback(options: GeminiCallbackOptions): S
   const records: GeminiCallbackRequestEvidence[] = [];
   const inFlight = new Set<Promise<unknown>>();
   const metrics: GeminiCallbackMetrics = {
-    transport: "stagehand_client_callback_google", provider: "google", model: STAGEHAND_GEMINI_CLIENT_MODEL,
+    transport: "stagehand_client_callback_google", provider: "google", model, endpoint,
     requestLimit: limit, requestCount: 0, successfulResponses: 0, failedResponses: 0, usageMetadataResponses: 0, totalLatencyMs: 0,
     providerObservedUsage: { promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0, thoughtsTokenCount: 0, cachedContentTokenCount: 0 }, requests: records,
   };
@@ -312,11 +321,11 @@ export function createStagehandGeminiCallback(options: GeminiCallbackOptions): S
       const entry: GeminiCallbackRequestEvidence = { requestId, actionId: requestActionId ?? null, status: "started", httpStatus: null, latencyMs: 0 };
       records.push(entry);
       const correlation = { requestId, ...(requestActionId ? { actionId: requestActionId } : {}) };
-      await options.onEvent?.("provider.inference_started", { transport: metrics.transport, provider: metrics.provider, model: metrics.model, attempt: metrics.requestCount, retryIndex }, correlation);
+      await options.onEvent?.("provider.inference_started", { transport: metrics.transport, provider: metrics.provider, model: metrics.model, endpoint, attempt: metrics.requestCount, retryIndex }, correlation);
       try {
         let response: Response;
         try {
-          response = await fetchImpl(STAGEHAND_GEMINI_CLIENT_ENDPOINT, {
+          response = await fetchImpl(endpoint, {
             method: "POST",
             headers: { "content-type": "application/json", "x-goog-api-key": options.apiKey },
             body: requestBody,
@@ -348,7 +357,7 @@ export function createStagehandGeminiCallback(options: GeminiCallbackOptions): S
           metrics.providerObservedUsage.cachedContentTokenCount += parsed.usage.cachedContentTokenCount ?? 0;
         }
         metrics.successfulResponses += 1; metrics.totalLatencyMs += latencyMs;
-        await options.onEvent?.("provider.inference_completed", { transport: metrics.transport, provider: metrics.provider, model: metrics.model, httpStatus: response.status, latencyMs, attempt: metrics.requestCount, retryIndex, ...(parsed.finishReason ? { finishReason: parsed.finishReason } : {}), ...(parsed.usage ? { usage: parsed.usage } : {}) }, correlation);
+        await options.onEvent?.("provider.inference_completed", { transport: metrics.transport, provider: metrics.provider, model: metrics.model, endpoint, httpStatus: response.status, latencyMs, attempt: metrics.requestCount, retryIndex, ...(parsed.finishReason ? { finishReason: parsed.finishReason } : {}), ...(parsed.usage ? { usage: parsed.usage } : {}) }, correlation);
         return parsed.result;
       } catch (error) {
         const latencyMs = Date.now() - startedAt;
@@ -356,7 +365,7 @@ export function createStagehandGeminiCallback(options: GeminiCallbackOptions): S
         const callbackError = error instanceof StagehandGeminiCallbackError ? error : new StagehandGeminiCallbackError("provider_error", providerDiagnostic(null, "unclassified", "provider callback failed"));
         entry.error = callbackError.diagnostic ?? providerDiagnostic(entry.httpStatus, "unclassified", callbackError.code);
         metrics.failedResponses += 1; metrics.totalLatencyMs += latencyMs;
-        await options.onEvent?.("provider.inference_failed", { transport: metrics.transport, provider: metrics.provider, model: metrics.model, httpStatus: entry.httpStatus, latencyMs, attempt: metrics.requestCount, retryIndex, error: entry.error }, correlation);
+        await options.onEvent?.("provider.inference_failed", { transport: metrics.transport, provider: metrics.provider, model: metrics.model, endpoint, httpStatus: entry.httpStatus, latencyMs, attempt: metrics.requestCount, retryIndex, error: entry.error }, correlation);
         const mayRetry503 = callbackError.code === "provider_error" && entry.httpStatus === 503 && retryIndex < STAGEHAND_GEMINI_MAX_503_RETRIES && metrics.requestCount < limit;
         if (mayRetry503) {
           const baseDelayMs = 250 * (2 ** retryIndex);
