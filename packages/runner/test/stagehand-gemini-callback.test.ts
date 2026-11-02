@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createStagehandGeminiCallback,
   STAGEHAND_GEMINI_MAX_OUTPUT_TOKENS,
+  STAGEHAND_GEMINI_MAX_503_RETRIES,
   STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT,
   STAGEHAND_GEMINI_CLIENT_ENDPOINT,
   StagehandGeminiCallbackError,
@@ -107,6 +108,76 @@ describe("Stagehand 4.3.0 Gemini client callback (offline only)", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(callback.snapshot())).not.toContain(TEST_KEY);
     expect(JSON.stringify(callback.snapshot())).not.toContain("bad ");
+  });
+
+  it("recovers from HTTP 503 with one bounded jittered retry and accounts for each provider attempt independently", async () => {
+    const replies = [new Response("{}", { status: 503 }), providerResponse()];
+    const delays: number[] = [];
+    const events: Array<{ type: string; payload: Record<string, unknown>; correlation: { requestId: string; actionId?: string } }> = [];
+    const fetchImpl = vi.fn(async () => replies.shift()!);
+    const callback = createStagehandGeminiCallback({
+      apiKey: TEST_KEY,
+      fetchImpl,
+      randomImpl: () => 0.5,
+      retrySleep: async (delayMs) => { delays.push(delayMs); },
+      onEvent: (type, payload, correlation) => { events.push({ type, payload, correlation }); },
+    });
+    callback.setActionContext("retry-action");
+    const result = await callback.clientLLM.generate(params);
+    const snapshot = callback.snapshot();
+    expect(result).toMatchObject({ structuredContent: { ok: true, items: ["refund form"] } });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(delays).toEqual([281]);
+    expect(STAGEHAND_GEMINI_MAX_503_RETRIES).toBe(2);
+    expect(snapshot).toMatchObject({ requestLimit: 6, requestCount: 2, successfulResponses: 1, failedResponses: 1, usageMetadataResponses: 1, providerObservedUsage: { promptTokenCount: 9, candidatesTokenCount: 4, totalTokenCount: 13 } });
+    expect(snapshot.requests.map(({ status, httpStatus, latencyMs, usageMetadata }) => ({ status, httpStatus, hasLatency: Number.isFinite(latencyMs), usageMetadata }))).toEqual([
+      { status: "failed", httpStatus: 503, hasLatency: true, usageMetadata: undefined },
+      { status: "completed", httpStatus: 200, hasLatency: true, usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 4, totalTokenCount: 13, thoughtsTokenCount: 2, cachedContentTokenCount: 1 } },
+    ]);
+    expect(new Set(snapshot.requests.map((request) => request.requestId)).size).toBe(2);
+    expect(events.map((event) => event.type)).toEqual(["provider.inference_started", "provider.inference_failed", "provider.inference_started", "provider.inference_completed"]);
+    expect(events.map((event) => [event.payload.attempt, event.payload.retryIndex])).toEqual([[1, 0], [1, 0], [2, 1], [2, 1]]);
+    expect(events.map((event) => event.correlation.requestId)).toEqual([snapshot.requests[0]?.requestId, snapshot.requests[0]?.requestId, snapshot.requests[1]?.requestId, snapshot.requests[1]?.requestId]);
+    expect(events.every((event) => event.correlation.actionId === "retry-action")).toBe(true);
+  });
+
+  it("exhausts at most two HTTP 503 retries and fails closed with three separately recorded failures", async () => {
+    const delays: number[] = [];
+    const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const fetchImpl = vi.fn(async () => new Response("{}", { status: 503 }));
+    const callback = createStagehandGeminiCallback({
+      apiKey: TEST_KEY,
+      fetchImpl,
+      randomImpl: () => 0.5,
+      retrySleep: async (delayMs) => { delays.push(delayMs); },
+      onEvent: (type, payload) => { events.push({ type, payload }); },
+    });
+    await expect(callback.clientLLM.generate(params)).rejects.toMatchObject({ code: "provider_error", diagnostic: { category: "provider_service", httpStatus: 503 } });
+    const snapshot = callback.snapshot();
+    expect(fetchImpl).toHaveBeenCalledTimes(STAGEHAND_GEMINI_MAX_503_RETRIES + 1);
+    expect(delays).toEqual([281, 562]);
+    expect(snapshot).toMatchObject({ requestCount: 3, successfulResponses: 0, failedResponses: 3, usageMetadataResponses: 0, providerObservedUsage: { promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0 } });
+    expect(snapshot.requests.map(({ status, httpStatus, usageMetadata }) => ({ status, httpStatus, usageMetadata }))).toEqual(Array.from({ length: 3 }, () => ({ status: "failed", httpStatus: 503, usageMetadata: undefined })));
+    expect(new Set(snapshot.requests.map((request) => request.requestId)).size).toBe(3);
+    expect(events.filter((event) => event.type === "provider.inference_started")).toHaveLength(3);
+    expect(events.filter((event) => event.type === "provider.inference_failed")).toHaveLength(3);
+    expect(events.map((event) => event.payload.retryIndex)).toEqual([0, 0, 1, 1, 2, 2]);
+  });
+
+  it("counts retries against the six-request run ceiling and does not retry an accepted response", async () => {
+    const replies = [new Response("{}", { status: 503 }), new Response("{}", { status: 503 }), providerResponse(), new Response("{}", { status: 503 }), providerResponse(), providerResponse()];
+    const delays: number[] = [];
+    const fetchImpl = vi.fn(async () => replies.shift()!);
+    const callback = createStagehandGeminiCallback({ apiKey: TEST_KEY, fetchImpl, randomImpl: () => 0, retrySleep: async (delayMs) => { delays.push(delayMs); } });
+    await callback.clientLLM.generate(params);
+    await callback.clientLLM.generate(params);
+    await callback.clientLLM.generate(params);
+    await expect(callback.clientLLM.generate(params)).rejects.toMatchObject({ code: "request_limit" });
+    const snapshot = callback.snapshot();
+    expect(fetchImpl).toHaveBeenCalledTimes(STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT);
+    expect(snapshot).toMatchObject({ requestCount: 6, successfulResponses: 3, failedResponses: 3, usageMetadataResponses: 3, requestLimit: 6 });
+    expect(snapshot.requests.map((request) => [request.status, request.httpStatus])).toEqual([["failed", 503], ["failed", 503], ["completed", 200], ["failed", 503], ["completed", 200], ["completed", 200]]);
+    expect(delays).toEqual([250, 500, 250]);
   });
 
   it("rejects unsupported blocks and enforces a hard six-request ceiling with unique event IDs", async () => {
