@@ -6,6 +6,7 @@ export const STAGEHAND_GEMINI_CLIENT_MODEL = "google/gemini-3.8-flash" as const;
 export const STAGEHAND_GEMINI_CLIENT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
 export const STAGEHAND_GEMINI_CALLBACK_TIMEOUT_MS = 80_000;
 export const STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT = 6;
+export const STAGEHAND_GEMINI_MAX_OUTPUT_TOKENS = 1_024;
 
 export type StagehandLLMGenerateParams = Parameters<ClientLLM["generate"]>[0];
 export type StagehandLLMGenerateResult = Awaited<ReturnType<ClientLLM["generate"]>>;
@@ -209,7 +210,10 @@ function googleParts(content: StagehandLLMGenerateParams["messages"][number]["co
 function buildGeminiRequest(params: StagehandLLMGenerateParams): Record<string, unknown> {
   const fullParams = params as StagehandLLMGenerateParams & { tools?: unknown[]; toolChoice?: unknown };
   if ((fullParams.tools?.length ?? 0) > 0 || fullParams.toolChoice !== undefined) throw new StagehandGeminiCallbackError("unsupported_stagehand_feature");
-  const generationConfig: Record<string, unknown> = { thinkingConfig: { thinkingLevel: "low" } };
+  const generationConfig: Record<string, unknown> = {
+    thinkingConfig: { thinkingLevel: "low" },
+    maxOutputTokens: STAGEHAND_GEMINI_MAX_OUTPUT_TOKENS,
+  };
   if (params.temperature !== undefined) generationConfig.temperature = params.temperature;
   if (params.stopSequences !== undefined) generationConfig.stopSequences = params.stopSequences;
   if (params.responseFormat?.type === "json_schema") {

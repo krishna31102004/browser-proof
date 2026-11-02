@@ -84,9 +84,20 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
     const resultRows = events.filter((event) => event.type === "agent.model_action_result");
     const proposalRows = events.filter((event) => event.type === "agent.action_proposed");
     const requestRows = events.filter((event) => event.type === "network.request");
-    const providerFailureBeforeActionResult = result.status === "browser_error" && result.agent && (result.agent as ObjectValue).error === "provider_error" && metadata.errorCode === "provider_error" && result.taskCompleted === false && resultRows.length === 0 && requestRows.length === 0 && Array.isArray(result.observedEffects) && result.observedEffects.length === 0 && metadata.liveInferenceCalls === 0;
+    const callbackEvidence = isRecord(metadata.providerCallback) ? metadata.providerCallback : undefined;
+    const callbackEvidenceRequests = Array.isArray(callbackEvidence?.requests) ? callbackEvidence.requests as ObjectValue[] : [];
+    const agentErrorRows = events.filter((event) => event.type === "agent.error" && event.payload.code === "provider_error");
+    const unmatchedProviderAction = result.status === "browser_error" && isRecord(result.agent) && result.agent.error === "provider_error" && metadata.errorCode === "provider_error" && result.taskCompleted === false && resultRows.length === 0 && requestRows.length === 0 && Array.isArray(result.observedEffects) && result.observedEffects.length === 0 && proposalRows.length - resultRows.length === 1 && agentErrorRows.length === 1 && agentErrorRows[0]?.payload.attempts === metadata.stagehandActCalls && (agentErrorRows[0]?.actionId === null || agentErrorRows[0]?.actionId === proposalRows[0]?.actionId);
+    const callbackResponseBeforeStagehandFailure = unmatchedProviderAction && inferenceTransport === "stagehand_client_callback_google" && callbackEvidenceRequests.some((request) => {
+      if (request.status !== "completed" || typeof request.requestId !== "string" || typeof request.actionId !== "string" || request.actionId !== proposalRows[0]?.actionId) return false;
+      const completion = events.find((event) => event.type === "provider.inference_completed" && event.requestId === request.requestId && event.actionId === request.actionId);
+      return completion !== undefined && agentErrorRows[0]?.actionId === request.actionId && events.indexOf(completion) < events.indexOf(agentErrorRows[0]!);
+    });
+    const callbackProviderFailureBeforeActionResult = unmatchedProviderAction && inferenceTransport === "stagehand_client_callback_google" && callbackEvidenceRequests.length > 0 && callbackEvidenceRequests.every((request) => request.status === "failed") && agentErrorRows[0] !== undefined && callbackEvidenceRequests.every((request) => events.some((event) => event.type === "provider.inference_failed" && event.requestId === request.requestId && events.indexOf(event) < events.indexOf(agentErrorRows[0]!)));
+    const providerFailureBeforeActionResult = unmatchedProviderAction && ((inferenceTransport === "native_google_extension" && metadata.liveInferenceCalls === 0) || callbackProviderFailureBeforeActionResult);
+    const missingActionResultIsExplained = providerFailureBeforeActionResult || callbackResponseBeforeStagehandFailure;
     const missingResultCount = proposalRows.length - resultRows.length;
-    if (Number(metadata.stagehandActCalls) !== proposalRows.length || (missingResultCount !== 0 && !(providerFailureBeforeActionResult && missingResultCount === 1)) || Number(metadata.stagehandActCalls) > STAGEHAND_MAX_ACTIONS || Number(metadata.liveInferenceCalls) < 0 || (inferenceTransport === "native_google_extension" && Number(metadata.liveInferenceCalls) > Number(metadata.stagehandActCalls)) || actionRows.length !== resultRows.length) errors.push("provider call/action evidence counts are inconsistent or exceed the six-act budget");
+    if (Number(metadata.stagehandActCalls) !== proposalRows.length || (missingResultCount !== 0 && !(missingActionResultIsExplained && missingResultCount === 1)) || Number(metadata.stagehandActCalls) > STAGEHAND_MAX_ACTIONS || Number(metadata.liveInferenceCalls) < 0 || (inferenceTransport === "native_google_extension" && Number(metadata.liveInferenceCalls) > Number(metadata.stagehandActCalls)) || actionRows.length !== resultRows.length) errors.push("provider call/action evidence counts are inconsistent or exceed the six-act budget");
     if (providerFailureBeforeActionResult) {
       const failureEvent = events.find((event) => event.type === "agent.error" && event.payload.code === "provider_error");
       const diagnostic = metadata.providerFailure;
@@ -127,7 +138,7 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
       }
       const expectedStatus = result.observerStatus !== "complete"
         ? "observer_inconclusive"
-        : providerFailureBeforeActionResult
+        : missingActionResultIsExplained
           ? "browser_error"
         : contract && contract.passed === false
           ? "contract_violation"
@@ -157,7 +168,8 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
         const terminal = providerEvents.filter((event) => (event.type === "provider.inference_completed" || event.type === "provider.inference_failed") && event.requestId === request.requestId);
         const matchingAction = proposalRows.find((event) => event.actionId === request.actionId);
         const actionResult = resultRows.find((event) => event.actionId === request.actionId);
-        if (started.length !== 1 || terminal.length !== 1 || (request.actionId !== null && !matchingAction) || started[0]?.payload.transport !== inferenceTransport || terminal[0]?.payload.transport !== inferenceTransport || terminal[0]?.actionId !== started[0]?.actionId || terminal[0]?.actionId !== (request.actionId === null ? undefined : request.actionId) || events.indexOf(terminal[0]!) <= events.indexOf(started[0]!) || (matchingAction && events.indexOf(started[0]!) <= events.indexOf(matchingAction)) || (actionResult && events.indexOf(terminal[0]!) >= events.indexOf(actionResult))) errors.push("client callback request event correlation or order is invalid");
+        const actionFailure = events.find((event) => event.type === "agent.error" && event.actionId === request.actionId);
+        if (started.length !== 1 || terminal.length !== 1 || (request.actionId !== null && !matchingAction) || started[0]?.payload.transport !== inferenceTransport || terminal[0]?.payload.transport !== inferenceTransport || terminal[0]?.actionId !== started[0]?.actionId || terminal[0]?.actionId !== (request.actionId === null ? undefined : request.actionId) || events.indexOf(terminal[0]!) <= events.indexOf(started[0]!) || (matchingAction && events.indexOf(started[0]!) <= events.indexOf(matchingAction)) || (actionResult && events.indexOf(terminal[0]!) >= events.indexOf(actionResult)) || (!actionResult && actionFailure && events.indexOf(terminal[0]!) >= events.indexOf(actionFailure))) errors.push("client callback request event correlation or order is invalid");
         if (request.status === "completed" && (terminal[0]?.type !== "provider.inference_completed" || typeof request.httpStatus !== "number" || request.httpStatus < 200 || request.httpStatus >= 300)) errors.push("successful client callback lacks a successful provider response event");
         if (request.status === "failed" && (terminal[0]?.type !== "provider.inference_failed" || !isRecord(request.error))) errors.push("failed client callback lacks sanitized provider failure evidence");
       }

@@ -8,6 +8,7 @@ import { stagehandModelConfiguration } from "../src/stagehand-adapter.js";
 import { validateStagehandArtifacts } from "../src/stagehand-artifact-validation.js";
 import { stagehandSingleRunExitCode } from "../src/stagehand-cli-policy.js";
 import { executeStagehandSameBrowserSmoke } from "../src/stagehand-run.js";
+import { createStagehandGeminiCallback, type StagehandLLMGenerateParams } from "../src/stagehand-gemini-callback.js";
 
 const TEST_CANARY = "sk-browserproof-private-test-canary-123456";
 type JsonObject = Record<string, any>;
@@ -143,6 +144,76 @@ describe("Stagehand artifact validation (mocked evidence fixtures only; not live
       errorEvent.payload.providerFailure.sanitizedCause = "TypeError: provider network request failed";
       await writeFile(mismatchedEventPath, mismatchedEvents.map((event) => JSON.stringify(event)).join("\n") + "\n");
       expect((await validateStagehandArtifacts(mismatchedEventDiagnostic)).valid).toBe(false);
+    } finally { await rm(temp, { recursive: true, force: true }); }
+  }, 60_000);
+
+  it("preserves successful callback usage when Stagehand fails before returning an action result", async () => {
+    const spike = await executeStagehandSameBrowserSmoke();
+    const temp = await mkdtemp(join(tmpdir(), "browserproof-stagehand-callback-then-stagehand-error-"));
+    const bundle = join(temp, "callback-response-stagehand-error");
+    await createMockedValidatorFixture(String(spike.artifactDir), bundle);
+    try {
+      const result = await readJson(join(bundle, "result.json"));
+      const runId = result.runId as string;
+      result.mode = "clean";
+      result.status = "browser_error";
+      result.taskCompleted = false;
+      result.observedEffects = [];
+      result.contract = evaluateRefundAtMostOnce([]);
+      result.agent = { attempts: 1, retries: 0, observation: "callback returned usage, then Stagehand act failed before an action result", error: "provider_error" };
+      result.fault = { type: null, armed: false, triggered: false, upstreamCommitted: false, browserReceivedSuccess: null };
+      await writeJson(join(bundle, "result.json"), result);
+      await writeJson(join(bundle, "schedule.json"), { schemaVersion: "1.0.0", mode: "clean", seed: "callback-response-stagehand-error", faults: [] });
+      await writeJson(join(bundle, "effects.json"), { schemaVersion: "1.0.0", runId, observerStatus: "complete", effects: [] });
+      await mutateJson(join(bundle, "manifest.json"), (manifest) => { manifest.mode = "clean"; manifest.seed = "callback-response-stagehand-error"; });
+      const eventPath = join(bundle, "events.jsonl");
+      const existing = (await readFile(eventPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as JsonObject);
+      const retained = existing.filter((event) => ["agent.page_target_proven", "agent.action_proposed"].includes(event.type));
+      const actionId = retained.find((event) => event.type === "agent.action_proposed")?.actionId as string | undefined;
+      if (!actionId) throw new Error("callback failure fixture is missing its action proposal");
+      const callbackEvents: JsonObject[] = [];
+      const callback = createStagehandGeminiCallback({
+        apiKey: TEST_CANARY,
+        fetchImpl: async () => new Response(JSON.stringify({
+          candidates: [{ content: { role: "model", parts: [{ text: JSON.stringify({ ok: true }) }] }, finishReason: "STOP" }],
+          usageMetadata: { promptTokenCount: 17, candidatesTokenCount: 5, totalTokenCount: 22, thoughtsTokenCount: 3 },
+        }), { status: 200, headers: { "content-type": "application/json" } }),
+        onEvent: (type, payload, correlation) => { callbackEvents.push({ eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", sequence: 0, timestamp: new Date().toISOString(), monotonicMs: callbackEvents.length + 10, source: "agent", type, ...correlation, payload }); },
+      });
+      callback.setActionContext(actionId);
+      const params: StagehandLLMGenerateParams = {
+        messages: [{ role: "user", content: { type: "text", text: "offline structured action schema" } }],
+        responseFormat: { type: "json_schema", name: "OfflineAction", schema: { type: "object", required: ["ok"], additionalProperties: false, properties: { ok: { type: "boolean" } } } },
+      };
+      await callback.clientLLM.generate(params);
+      const callbackSnapshot = callback.snapshot();
+      expect(callbackSnapshot).toMatchObject({ requestCount: 1, successfulResponses: 1, failedResponses: 0, usageMetadataResponses: 1, providerObservedUsage: { promptTokenCount: 17, candidatesTokenCount: 5, totalTokenCount: 22, thoughtsTokenCount: 3 } });
+      const diagnostic = { category: "unclassified", httpStatus: null, sanitizedCause: "Error: provider request failed" };
+      await mutateJson(join(bundle, "agent-metadata.json"), (metadata) => {
+        Object.assign(metadata, {
+          inferenceTransport: "stagehand_client_callback_google", stagehandActCalls: 1, liveInferenceCalls: 1,
+          actionExecutions: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, inferenceTimeMs: 0,
+          taskCompleted: false, errorCode: "provider_error", providerFailure: diagnostic,
+          sdkReportedMetrics: { stagehandActCalls: 1, liveInferenceCalls: 0, actionExecutions: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, inferenceTimeMs: 0, lateResultsDiscarded: 0 },
+          providerCallback: callbackSnapshot,
+        });
+      });
+      await mutateJson(join(bundle, "same-browser.json"), (proof) => { proof.inferenceTransport = "stagehand_client_callback_google"; });
+      retained.push(...callbackEvents, { eventId: randomUUID(), runId, scenarioId: "supportdesk-refund-v1", sequence: 0, timestamp: new Date().toISOString(), monotonicMs: 50, source: "agent", type: "agent.error", actionId, requestId: null, payload: { adapterId: "stagehand-v4", code: "provider_error", attempts: 1, providerFailure: diagnostic } });
+      retained.forEach((event, index) => { event.sequence = index + 1; });
+      await writeFile(eventPath, retained.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      await writeFile(join(bundle, "model-actions.jsonl"), "");
+      await import("node:fs/promises").then(({ unlink }) => Promise.all([unlink(join(bundle, "screenshots/at-boundary.png")), unlink(join(bundle, "screenshots/after-agent.png"))]));
+      await writeJson(join(bundle, "terminal.json"), { executionStatus: "browser_error", taskCompleted: false, faultTriggered: false, observerStatus: "complete", contractPassed: true, terminalOutcome: "agent_error", exitReason: "provider_error", quiescenceVerified: true, cleanupErrors: [], artifactError: null });
+
+      const validation = await validateStagehandArtifacts(bundle);
+      expect(validation).toEqual({ valid: true, errors: [] });
+      expect(result.status).toBe("browser_error");
+      expect(result.taskCompleted).toBe(false);
+      expect(result.observedEffects).toEqual([]);
+      expect(callbackSnapshot.successfulResponses).toBe(1);
+      expect(retained.some((event) => event.type === "agent.model_action_result")).toBe(false);
+      expect(stagehandSingleRunExitCode({ artifactValid: validation.valid, mode: "clean", executionStatus: "browser_error", taskCompleted: false, faultTriggered: false, observerStatus: "complete", contractPassed: true, terminalOutcome: "agent_error", expectedViolationAsserted: false, quiescenceVerified: true, cleanupErrors: [] })).toBe(1);
     } finally { await rm(temp, { recursive: true, force: true }); }
   }, 60_000);
 

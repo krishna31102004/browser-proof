@@ -5,6 +5,7 @@ import { chromium } from "playwright";
 import { describe, expect, it, vi } from "vitest";
 import {
   createStagehandGeminiCallback,
+  STAGEHAND_GEMINI_MAX_OUTPUT_TOKENS,
   STAGEHAND_GEMINI_CALLBACK_REQUEST_LIMIT,
   STAGEHAND_GEMINI_CLIENT_ENDPOINT,
   StagehandGeminiCallbackError,
@@ -62,7 +63,8 @@ describe("Stagehand 4.3.0 Gemini client callback (offline only)", () => {
     expect(requestBody.systemInstruction.parts[0].text).toBe(params.systemPrompt);
     expect(requestBody.contents[0]).toMatchObject({ role: "user", parts: [{ text: "Inspect the visible refund form." }, { inlineData: { mimeType: "image/png", data: expect.any(String) } }] });
     expect(requestBody.contents[1]).toEqual({ role: "model", parts: [{ text: "I will inspect the form." }] });
-    expect(requestBody.generationConfig).toMatchObject({ temperature: 0.1, stopSequences: ["<END>"], responseMimeType: "application/json", responseJsonSchema: structuredSchema, thinkingConfig: { thinkingLevel: "low" } });
+    expect(requestBody.generationConfig).toMatchObject({ temperature: 0.1, stopSequences: ["<END>"], responseMimeType: "application/json", responseJsonSchema: structuredSchema, thinkingConfig: { thinkingLevel: "low" }, maxOutputTokens: STAGEHAND_GEMINI_MAX_OUTPUT_TOKENS });
+    expect(STAGEHAND_GEMINI_MAX_OUTPUT_TOKENS).toBe(1_024);
     expect(result).toMatchObject({ role: "assistant", outputFormat: "json_schema", structuredContent: { ok: true, items: ["refund form"] }, usage: { inputTokens: 9, outputTokens: 4, totalTokens: 13, reasoningTokens: 2, cachedInputTokens: 1 }, stopReason: "STOP" });
     const snapshot = callback.snapshot();
     expect(snapshot).toMatchObject({ transport: "stagehand_client_callback_google", provider: "google", model: "google/gemini-3.8-flash", requestCount: 1, successfulResponses: 1, failedResponses: 0, usageMetadataResponses: 1, providerObservedUsage: { promptTokenCount: 9, candidatesTokenCount: 4, totalTokenCount: 13, thoughtsTokenCount: 2, cachedContentTokenCount: 1 } });
