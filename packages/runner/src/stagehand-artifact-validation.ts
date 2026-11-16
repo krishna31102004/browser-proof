@@ -98,7 +98,7 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
     const unmatchedProposals = proposalRows.filter((proposal) => !resultRows.some((actionResult) => actionResult.actionId === proposal.actionId));
     const unmatchedProposal = unmatchedProposals.length === 1 ? unmatchedProposals[0] : undefined;
     const unmatchedProviderAction = result.status === "browser_error" && isRecord(result.agent) && result.agent.error === "provider_error" && metadata.errorCode === "provider_error" && result.taskCompleted === false && resultRows.length === proposalRows.length - 1 && requestRows.length === 0 && Array.isArray(result.observedEffects) && result.observedEffects.length === 0 && unmatchedProposal !== undefined && agentErrorRows.length === 1 && agentErrorRows[0]?.payload.attempts === metadata.stagehandActCalls && (agentErrorRows[0]?.actionId == null || agentErrorRows[0]?.actionId === unmatchedProposal.actionId);
-    const callbackResponseBeforeStagehandFailure = unmatchedProviderAction && inferenceTransport === "stagehand_client_callback_google" && callbackEvidenceRequests.some((request) => {
+    const callbackResponseBeforeStagehandFailure = unmatchedProviderAction && (inferenceTransport === "stagehand_client_callback_google" || inferenceTransport === "stagehand_client_callback_openai") && callbackEvidenceRequests.some((request) => {
       if (request.status !== "completed" || typeof request.requestId !== "string" || typeof request.actionId !== "string" || request.actionId !== unmatchedProposal?.actionId) return false;
       const completion = events.find((event) => event.type === "provider.inference_completed" && event.requestId === request.requestId && event.actionId === request.actionId);
       // StagehandV4AgentAdapter clears its callback action context before it
@@ -107,7 +107,7 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
       // the action binding for this failure boundary.
       return completion !== undefined && events.indexOf(completion) < events.indexOf(agentErrorRows[0]!);
     });
-    const callbackProviderFailureBeforeActionResult = unmatchedProviderAction && inferenceTransport === "stagehand_client_callback_google" && callbackEvidenceRequests.some((request) => request.status === "failed" && request.actionId === unmatchedProposal?.actionId && events.some((event) => event.type === "provider.inference_failed" && event.requestId === request.requestId && events.indexOf(event) < events.indexOf(agentErrorRows[0]!)));
+    const callbackProviderFailureBeforeActionResult = unmatchedProviderAction && (inferenceTransport === "stagehand_client_callback_google" || inferenceTransport === "stagehand_client_callback_openai") && callbackEvidenceRequests.some((request) => request.status === "failed" && request.actionId === unmatchedProposal?.actionId && events.some((event) => event.type === "provider.inference_failed" && event.requestId === request.requestId && events.indexOf(event) < events.indexOf(agentErrorRows[0]!)));
     const providerFailureBeforeActionResult = unmatchedProviderAction && ((inferenceTransport === "native_google_extension" && metadata.liveInferenceCalls === 0) || callbackProviderFailureBeforeActionResult);
     const missingActionResultIsExplained = providerFailureBeforeActionResult || callbackResponseBeforeStagehandFailure;
     const missingResultCount = proposalRows.length - resultRows.length;
@@ -195,6 +195,7 @@ export async function validateStagehandArtifacts(artifactDir: string, forbiddenS
         const started = providerEvents.filter((event) => event.type === "provider.inference_started" && event.requestId === request.requestId);
         const terminal = providerEvents.filter((event) => (event.type === "provider.inference_completed" || event.type === "provider.inference_failed") && event.requestId === request.requestId);
         if (isOpenAI && (terminal[0]?.payload.httpStatus !== request.httpStatus || terminal[0]?.payload.latencyMs !== request.latencyMs || (request.status === "completed" && JSON.stringify(terminal[0]?.payload.usage) !== JSON.stringify(request.usageMetadata)))) errors.push("OpenAI provider response telemetry mismatch");
+        if (isOpenAI && request.status === "failed" && (request.usageMetadata !== undefined || request.semanticFailure !== undefined) && (JSON.stringify(terminal[0]?.payload.usage) !== JSON.stringify(request.usageMetadata) || JSON.stringify(terminal[0]?.payload.semanticFailure) !== JSON.stringify(request.semanticFailure))) errors.push("OpenAI failed-response telemetry mismatch");
         const matchingAction = proposalRows.find((event) => event.actionId === request.actionId);
         const actionResult = resultRows.find((event) => event.actionId === request.actionId);
         const actionFailure = events.find((event) => event.type === "agent.error" && (event.actionId === request.actionId || (event.actionId == null && unmatchedProposal?.actionId === request.actionId && event.payload.attempts === metadata.stagehandActCalls)));

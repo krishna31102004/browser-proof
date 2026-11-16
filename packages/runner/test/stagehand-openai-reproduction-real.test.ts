@@ -60,3 +60,20 @@ describe("OpenAI reproduction with real browser, ledger, validator and audit; mo
     } finally { fixtureState.safe = false; vi.unstubAllGlobals(); }
   }, 120_000);
 });
+
+it("validates a real failure artifact before an action result without accepting the task", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bp-openai-failure-")); const originalFetch = globalThis.fetch;
+  vi.stubGlobal("fetch", async (url: any, init: any) => {
+    if (String(url) !== "https://api.openai.com/v1/responses") {
+      if (new URL(String(url)).hostname !== "127.0.0.1") throw new Error("external network blocked");
+      return originalFetch(url, init);
+    }
+    return new Response(JSON.stringify({ model: "gpt-6-luna", status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [{ type: "reasoning" }], usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 } }));
+  });
+  try {
+    const run = await executeStagehandRun({ mode: "clean", seed: "failure", model: "openai/gpt-6-luna", providerApiKey: "offline-canary", allowPaidOpenAI: true, allowFreeTierGemini: false, inferenceTransport: "stagehand_client_callback_openai", artifactRoot: root });
+    expect(run.result.taskCompleted).toBe(false); expect(run.result.observedEffects).toHaveLength(0);
+    expect(await validateStagehandArtifacts(run.artifactDir)).toEqual({ valid: true, errors: [] });
+    expect(await auditStagehandCampaignTrial(run, "clean", "offline-canary", "openai/gpt-6-luna", "stagehand_client_callback_openai")).toBeDefined();
+  } finally { vi.unstubAllGlobals(); }
+}, 60000);

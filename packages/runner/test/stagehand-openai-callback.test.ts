@@ -41,3 +41,27 @@ describe("OpenAI callback, mocked transport", () => {
     await expect(callback.clientLLM.generate(params)).rejects.toMatchObject({ code: "provider_error", diagnostic: { sanitizedCause: "Error: provider request timed out" } });
   });
 });
+
+describe("OpenAI semantic diagnostics and provider usage retention", () => {
+  const payload = (overrides: Record<string, unknown> = {}) => ({ model: "gpt-6-luna", status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: '{"ok":true}' }] }], usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14, input_tokens_details: { cached_tokens: 1, cache_write_tokens: 2, cache_write_tokens_details: { ttl_12h_tokens: 1, ttl_30m_tokens: 1 } }, output_tokens_details: { reasoning_tokens: 2 } }, ...overrides });
+  const p: StagehandLLMGenerateParams = { messages: [], responseFormat: { type: "json_schema", name: "result", schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false } } };
+  it("accepts documented nested cache usage without exposing response text", async () => {
+    const c = createStagehandOpenAICallback({ apiKey: "secret", fetchImpl: async () => new Response(JSON.stringify(payload())) });
+    expect(await c.clientLLM.generate(p)).toMatchObject({ structuredContent: { ok: true } }); expect(c.snapshot().usageMetadataResponses).toBe(1);
+  });
+  it.each([
+    ["incomplete_response", { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } }],
+    ["empty_output_text", { output: [{ type: "reasoning" }] }],
+    ["model_identity", { model: "other" }],
+    ["invalid_json", { output: [{ type: "message", content: [{ type: "output_text", text: "private-non-json" }] }] }],
+    ["json_schema_validation", { output: [{ type: "message", content: [{ type: "output_text", text: '{"ok":"private"}' }] }] }],
+    ["refusal", { output: [{ type: "message", content: [{ type: "refusal", refusal: "private refusal" }] }] }],
+    ["usage_validation", { usage: null }],
+    ["usage_validation", { usage: { input_tokens: 10, output_tokens: 4, total_tokens: 13 } }],
+  ])("records safe %s diagnosis and independent valid usage", async (stage, overrides) => {
+    const events: unknown[] = []; const c = createStagehandOpenAICallback({ apiKey: "secret", fetchImpl: async () => new Response(JSON.stringify(payload(overrides))), onEvent: (type, data) => { events.push({ type, data }); } });
+    await expect(c.clientLLM.generate(p)).rejects.toMatchObject({ code: "malformed_model_response" });
+    const snapshot = c.snapshot(); expect(snapshot.successfulResponses).toBe(0); expect(snapshot.requests[0]?.semanticFailure).toMatchObject({ stage });
+    expect(snapshot.usageMetadataResponses).toBe(stage === "usage_validation" ? 0 : 1); expect(JSON.stringify({ snapshot, events })).not.toContain("private"); expect(JSON.stringify({ snapshot, events })).not.toContain("secret");
+  });
+});
