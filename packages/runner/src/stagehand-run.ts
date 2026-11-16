@@ -11,6 +11,7 @@ import { EventWriter } from "./event-writer.js";
 import { validateStagehandSavedSchedule } from "./stagehand-artifact-validation.js";
 import { APPROVED_GEMINI_STAGEHAND_MODELS, StagehandV4AgentAdapter, STAGEHAND_ACT_ADAPTER_DEADLINE_MS, STAGEHAND_MAX_ACTIONS, STAGEHAND_SDK_VERSION, sanitizeStagehandText, stagehandModelConfiguration, validateStagehandSpendConfiguration, type ApprovedGeminiStagehandModel, type ApprovedStagehandModel } from "./stagehand-adapter.js";
 import { createStagehandGeminiCallback, type GeminiCallbackMetrics } from "./stagehand-gemini-callback.js";
+import { createStagehandOpenAICallback } from "./stagehand-openai-callback.js";
 import type { StagehandCampaignRequestPacer } from "./stagehand-campaign-pacer.js";
 import { isAllowedNativeGeminiWorkerRequest, type StagehandInferenceTransport } from "./stagehand-network-policy.js";
 import type { AgentEventEmitter, AgentTaskOutcome } from "./agent-adapter.js";
@@ -37,6 +38,7 @@ export interface StagehandRunOptions {
   model: ApprovedStagehandModel;
   providerApiKey: string;
   allowFreeTierGemini: boolean;
+  allowPaidOpenAI?: boolean;
   inferenceTransport?: StagehandInferenceTransport;
   campaignPacer?: StagehandCampaignRequestPacer;
   artifactRoot?: string;
@@ -110,7 +112,7 @@ function normalizeOutcome(status: RunResult["status"], effects: RefundEffect[]):
 
 /** Real model-backed run. Callers must validate explicit spend opt-in before entering this function. */
 export async function executeStagehandRun(options: StagehandRunOptions): Promise<StagehandRunSummary> {
-  validateStagehandSpendConfiguration({ model: options.model, providerApiKey: options.providerApiKey, allowFreeTierGemini: options.allowFreeTierGemini });
+  validateStagehandSpendConfiguration({ model: options.model, providerApiKey: options.providerApiKey, allowFreeTierGemini: options.allowFreeTierGemini, ...(options.allowPaidOpenAI ? { allowPaidOpenAI: true } : {}) });
   if (options.schedule && (options.mode !== "faulted" || !validateStagehandSavedSchedule({ schemaVersion: ARTIFACT_SCHEMA_VERSION, mode: options.mode, seed: options.seed, faults: [options.schedule] }, options.seed))) {
     throw new Error("Stagehand fault schedule must match the exact saved SupportDesk schedule schema, seed and identity");
   }
@@ -118,7 +120,8 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   const modelConfiguration = stagehandModelConfiguration(model)!;
   const inferenceTransport = options.inferenceTransport ?? "native_google_extension";
   if (model === "google/gemini-3.6-flash" && inferenceTransport !== "stagehand_client_callback_google") throw new Error("Gemini 3.6 Flash is supported only through the client-callback transport");
-  if (inferenceTransport !== "native_google_extension" && inferenceTransport !== "stagehand_client_callback_google") throw new Error("Unsupported Stagehand inference transport");
+  if ((model === "openai/gpt-6-luna") !== (inferenceTransport === "stagehand_client_callback_openai")) throw new Error("OpenAI requires its dedicated client-callback transport");
+  if (inferenceTransport !== "native_google_extension" && inferenceTransport !== "stagehand_client_callback_google" && inferenceTransport !== "stagehand_client_callback_openai") throw new Error("Unsupported Stagehand inference transport");
   const runId = randomUUID();
   const root = resolve(options.artifactRoot ?? fileURLToPath(new URL("../../../artifacts", import.meta.url)));
   const { artifactDir, screenshotsDir } = await createStagehandArtifactDirectories(root, runId);
@@ -134,7 +137,7 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
   let stagehandBrowser: Awaited<ReturnType<typeof localBrowser.launch>> | undefined;
   let stagehand: Stagehand | undefined;
   let adapter: StagehandV4AgentAdapter | undefined;
-  let geminiCallback: ReturnType<typeof createStagehandGeminiCallback> | undefined;
+  let geminiCallback: ReturnType<typeof createStagehandGeminiCallback> | ReturnType<typeof createStagehandOpenAICallback> | undefined;
   let playwrightBrowser: Browser | undefined;
   let context: Awaited<ReturnType<Browser["newContext"]>> | undefined;
   let traceStarted = false;
@@ -187,7 +190,10 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
 
     cdpPort = await choosePort();
     stagehandBrowser = await localBrowser.launch({ headless: true, port: cdpPort, userDataDir: profileDir });
-    if (inferenceTransport === "stagehand_client_callback_google") {
+    if (inferenceTransport === "stagehand_client_callback_openai") {
+      geminiCallback = createStagehandOpenAICallback({ apiKey: options.providerApiKey, ...(options.campaignPacer ? { campaignPacer: options.campaignPacer } : {}), onEvent: async (type, payload, correlation) => { await recordEvent("agent", type, payload, correlation); } });
+      stagehand = await Stagehand.create({ browser: stagehandBrowser, model: geminiCallback.clientLLM, logging: { level: "off" } });
+    } else if (inferenceTransport === "stagehand_client_callback_google") {
       geminiCallback = createStagehandGeminiCallback({
         apiKey: options.providerApiKey,
         model: model as ApprovedGeminiStagehandModel,
@@ -337,7 +343,7 @@ export async function executeStagehandRun(options: StagehandRunOptions): Promise
       removeTemporaryProfile: async () => { await rm(profileDir, { recursive: true, force: true }); return await waitForPathRemoval(profileDir); },
     });
     if (!providerCallbacksDrained) {
-      quiescence.cleanupErrors.push("Gemini client callback did not settle after cancellation");
+      quiescence.cleanupErrors.push("Provider client callback did not settle after cancellation");
       quiescence.quiescenceVerified = false;
     }
     if (adapter) {

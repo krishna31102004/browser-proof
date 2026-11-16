@@ -88,6 +88,44 @@ describe("Stagehand artifact validation (mocked evidence fixtures only; not live
       events.forEach((event, index) => { event.sequence = index + 1; });
       await writeFile(eventPath, events.map((event) => JSON.stringify(event)).join("\n") + "\n");
       expect(await validateStagehandArtifacts(bundle)).toEqual({ valid: true, errors: [] });
+      const openaiBundle = join(temp, "openai-callback-evidence");
+      await cp(bundle, openaiBundle, { recursive: true });
+      await mutateJson(join(openaiBundle, "agent-metadata.json"), (data) => {
+        data.provider = "openai"; data.model = "openai/gpt-6-luna"; data.providerModelId = "gpt-6-luna"; data.inferenceTransport = "stagehand_client_callback_openai";
+        Object.assign(data.providerCallback, { reasoningEffort: "low", maxOutputTokens: 4096, provider: "openai", model: data.model, transport: data.inferenceTransport, endpoint: "https://api.openai.com/v1/responses" });
+      });
+      await mutateJson(join(openaiBundle, "manifest.json"), (data) => Object.assign(data, { provider: "openai", model: "openai/gpt-6-luna", providerModelId: "gpt-6-luna", inferenceTransport: "stagehand_client_callback_openai" }));
+      await mutateJson(join(openaiBundle, "same-browser.json"), (data) => { data.inferenceTransport = "stagehand_client_callback_openai"; });
+      const openaiEvents = structuredClone(events);
+      for (const event of openaiEvents) if (event.type.startsWith("provider.inference_")) Object.assign(event.payload, { provider: "openai", model: "openai/gpt-6-luna", transport: "stagehand_client_callback_openai", endpoint: "https://api.openai.com/v1/responses" });
+      await writeFile(join(openaiBundle, "events.jsonl"), openaiEvents.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      expect(await validateStagehandArtifacts(openaiBundle)).toEqual({ valid: true, errors: [] });
+      for (const mutation of [
+        (data: JsonObject) => { data.provider = "google"; },
+        (data: JsonObject) => { data.model = "openai/other"; },
+        (data: JsonObject) => { delete data.providerCallback.requests[0].usageMetadata; },
+        (data: JsonObject) => { data.providerCallback.requests.push(data.providerCallback.requests[0]); },
+        (data: JsonObject) => { data.providerCallback.requests[0].actionId = "wrong"; },
+      ]) {
+        const original = await readJson(join(openaiBundle, "agent-metadata.json"));
+        const changed = structuredClone(original); mutation(changed); await writeJson(join(openaiBundle, "agent-metadata.json"), changed);
+        expect((await validateStagehandArtifacts(openaiBundle)).valid).toBe(false);
+        await writeJson(join(openaiBundle, "agent-metadata.json"), original);
+      }
+      for (const [file, mutate] of [
+        ["terminal.json", (data: JsonObject) => { data.quiescenceVerified = false; }],
+        ["terminal.json", (data: JsonObject) => { data.terminalOutcome = "clean_success"; }],
+        ["effects.json", (data: JsonObject) => { data.effects[0].actionId = "wrong-action"; }],
+        ["agent-metadata.json", (data: JsonObject) => { data.providerCallback.providerObservedUsage.totalTokenCount += 1; }],
+      ] as Array<[string, (data: JsonObject) => void]>) {
+        const original = await readJson(join(openaiBundle, file)); const changed = structuredClone(original); mutate(changed);
+        await writeJson(join(openaiBundle, file), changed); expect((await validateStagehandArtifacts(openaiBundle)).valid).toBe(false);
+        await writeJson(join(openaiBundle, file), original);
+      }
+      const originalTrace = await readFile(join(openaiBundle, "trace.zip"));
+      await writeFile(join(openaiBundle, "trace.zip"), originalTrace.subarray(0, 40));
+      expect((await validateStagehandArtifacts(openaiBundle)).valid).toBe(false);
+      await writeFile(join(openaiBundle, "trace.zip"), originalTrace);
       const gemini36Bundle = join(temp, "gemini-3.6-callback-evidence");
       await cp(bundle, gemini36Bundle, { recursive: true });
       await mutateJson(join(gemini36Bundle, "agent-metadata.json"), (data) => {

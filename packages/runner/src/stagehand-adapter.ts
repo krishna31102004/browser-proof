@@ -14,11 +14,12 @@ export const STAGEHAND_ACT_ADAPTER_DEADLINE_MS = STAGEHAND_ACT_TIMEOUT_MS + STAG
 export const STAGEHAND_MODEL_CONFIGURATIONS = [
   { provider: "google", model: "google/gemini-3.8-flash", providerModelId: "gemini-3.8-flash", keyEnvironmentVariable: "GEMINI_API_KEY", authorization: "free-tier-only" },
   { provider: "google", model: "google/gemini-3.6-flash", providerModelId: "gemini-3.6-flash", keyEnvironmentVariable: "GEMINI_API_KEY", authorization: "free-tier-only" },
+  { provider: "openai", model: "openai/gpt-6-luna", providerModelId: "gpt-6-luna", keyEnvironmentVariable: "OPENAI_API_KEY", authorization: "paid-opt-in" },
   // Kept for reading/validating legacy Prompt 12 artifacts. Prompt 12B never invokes it.
   { provider: "openai", model: "openai/gpt-5.4-mini", providerModelId: "gpt-5.4-mini", keyEnvironmentVariable: "OPENAI_API_KEY", authorization: "legacy-paid" },
 ] as const;
 export const APPROVED_GEMINI_STAGEHAND_MODELS = ["google/gemini-3.8-flash", "google/gemini-3.6-flash"] as const;
-export const APPROVED_STAGEHAND_MODELS = [...APPROVED_GEMINI_STAGEHAND_MODELS, "openai/gpt-5.4-mini"] as const;
+export const APPROVED_STAGEHAND_MODELS = [...APPROVED_GEMINI_STAGEHAND_MODELS, "openai/gpt-6-luna", "openai/gpt-5.4-mini"] as const;
 export type ApprovedGeminiStagehandModel = (typeof APPROVED_GEMINI_STAGEHAND_MODELS)[number];
 export type ApprovedStagehandModel = (typeof STAGEHAND_MODEL_CONFIGURATIONS)[number]["model"];
 export type StagehandProvider = (typeof STAGEHAND_MODEL_CONFIGURATIONS)[number]["provider"];
@@ -31,11 +32,12 @@ export function stagehandModelConfiguration(model: string): StagehandModelConfig
 export interface StagehandSpendConfiguration {
   model: string;
   allowFreeTierGemini: boolean;
+  allowPaidOpenAI?: boolean;
   providerApiKey?: string;
 }
 
 export class StagehandConfigurationError extends Error {
-  constructor(readonly code: "free_tier_opt_in_required" | "unsupported_model" | "provider_key_missing" | "provider_not_enabled") {
+  constructor(readonly code: "free_tier_opt_in_required" | "paid_opt_in_required" | "unsupported_model" | "provider_key_missing" | "provider_not_enabled") {
     super(code);
     this.name = "StagehandConfigurationError";
   }
@@ -45,8 +47,9 @@ export class StagehandConfigurationError extends Error {
 export function validateStagehandSpendConfiguration(configuration: StagehandSpendConfiguration): void {
   const model = stagehandModelConfiguration(configuration.model);
   if (!model) throw new StagehandConfigurationError("unsupported_model");
-  if (model.provider !== "google" || model.authorization !== "free-tier-only") throw new StagehandConfigurationError("provider_not_enabled");
-  if (configuration.allowFreeTierGemini !== true) throw new StagehandConfigurationError("free_tier_opt_in_required");
+  if (model.model === "openai/gpt-6-luna") { if (configuration.allowPaidOpenAI !== true) throw new StagehandConfigurationError("paid_opt_in_required"); }
+  else if (model.provider !== "google" || model.authorization !== "free-tier-only") throw new StagehandConfigurationError("provider_not_enabled");
+  else if (configuration.allowFreeTierGemini !== true) throw new StagehandConfigurationError("free_tier_opt_in_required");
   if (typeof configuration.providerApiKey !== "string" || configuration.providerApiKey.trim().length === 0) {
     throw new StagehandConfigurationError("provider_key_missing");
   }

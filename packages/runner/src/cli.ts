@@ -1,3 +1,6 @@
+import { reproduceOpenAI } from "./stagehand-openai-reproduction.js";
+import { verifyOpenAICampaign } from "./stagehand-openai-campaign.js";
+import { parseOpenAIResumeReport, type OpenAIResumeTrial } from "./stagehand-openai-resume.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -69,39 +72,40 @@ function validateStagehandFlags(allowed: ReadonlySet<string>, args: readonly str
     if (!allowed.has(flag)) throw new Error(`Unknown Stagehand CLI argument: ${flag}`);
     if (seen.has(flag)) throw new Error(`Duplicate Stagehand CLI argument: ${flag}`);
     seen.add(flag);
-    if (flag === "--allow-free-tier-gemini" || flag === "--expect-contract-violation") continue;
+    if (flag === "--allow-free-tier-gemini" || flag === "--allow-paid-openai" || flag === "--authorize-resume-after-failure" || flag === "--expect-contract-violation") continue;
     if (!args[index + 1] || args[index + 1]!.startsWith("--")) throw new Error(`Missing value for ${flag}`);
     index += 1;
   }
 }
 
-function stagehandRunConfiguration(): { model: ApprovedGeminiStagehandModel; key: string; inferenceTransport: StagehandInferenceTransport } {
+function stagehandRunConfiguration(): { model: ApprovedGeminiStagehandModel | "openai/gpt-6-luna"; key: string; inferenceTransport: StagehandInferenceTransport } {
   const model = argument("--model");
   const requestedTransport = argument("--inference-transport", "native");
-  const inferenceTransport: StagehandInferenceTransport | undefined = requestedTransport === "native" ? "native_google_extension" : requestedTransport === "client-callback" ? "stagehand_client_callback_google" : undefined;
+  const inferenceTransport: StagehandInferenceTransport | undefined = requestedTransport === "native" ? "native_google_extension" : requestedTransport === "client-callback" ? model === "openai/gpt-6-luna" ? "stagehand_client_callback_openai" : "stagehand_client_callback_google" : undefined;
   if (!inferenceTransport) throw new Error("--inference-transport must be native or client-callback");
-  const providerApiKey = process.env.GEMINI_API_KEY;
-  const approvedModel = APPROVED_GEMINI_STAGEHAND_MODELS.find((candidate) => candidate === model);
+  const providerApiKey = model === "openai/gpt-6-luna" ? process.env.OPENAI_API_KEY : process.env.GEMINI_API_KEY;
+  const approvedModel = model === "openai/gpt-6-luna" ? model : APPROVED_GEMINI_STAGEHAND_MODELS.find((candidate) => candidate === model);
   if (!approvedModel) throw new Error("Prompt 12B live runs support only --model google/gemini-3.8-flash or google/gemini-3.6-flash; paid/legacy models are disabled");
   if (approvedModel === "google/gemini-3.6-flash" && inferenceTransport !== "stagehand_client_callback_google") throw new Error("Gemini 3.6 Flash requires --inference-transport client-callback");
-  validateStagehandSpendConfiguration({ model: approvedModel, allowFreeTierGemini: process.argv.includes("--allow-free-tier-gemini"), ...(providerApiKey ? { providerApiKey } : {}) });
+  if (approvedModel === "openai/gpt-6-luna" && inferenceTransport !== "stagehand_client_callback_openai") throw new Error("OpenAI requires --inference-transport client-callback");
+  validateStagehandSpendConfiguration({ model: approvedModel, allowFreeTierGemini: process.argv.includes("--allow-free-tier-gemini"), allowPaidOpenAI: process.argv.includes("--allow-paid-openai"), ...(providerApiKey ? { providerApiKey } : {}) });
   return { model: approvedModel, key: providerApiKey!, inferenceTransport };
 }
 
 async function runStagehandOnce(): Promise<number> {
-  validateStagehandFlags(new Set(["--scenario", "--adapter", "--mode", "--seed", "--model", "--inference-transport", "--allow-free-tier-gemini", "--expect-contract-violation"]), process.argv.slice(3));
+  validateStagehandFlags(new Set(["--scenario", "--adapter", "--mode", "--seed", "--model", "--inference-transport", "--allow-free-tier-gemini", "--allow-paid-openai", "--expect-contract-violation"]), process.argv.slice(3));
   if (argument("--scenario") !== "supportdesk-refund-v1") throw new Error("Stagehand supports only --scenario supportdesk-refund-v1 in Prompt 12");
   const mode = argument("--mode") as RunMode | undefined; const seed = argument("--seed");
   if ((mode !== "clean" && mode !== "faulted") || !seed) throw new Error("Usage: pnpm bp run --scenario supportdesk-refund-v1 --adapter stagehand-v4 --mode <clean|faulted> --seed <seed> --model <google/gemini-3.8-flash|google/gemini-3.6-flash> --inference-transport <native|client-callback> --allow-free-tier-gemini");
   const config = stagehandRunConfiguration();
   const expectViolation = process.argv.includes("--expect-contract-violation");
   if (expectViolation && mode !== "faulted") throw new Error("--expect-contract-violation is valid only for a faulted Stagehand run");
-  const run = await executeStagehandRun({ mode, seed, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport });
+  const run = await executeStagehandRun({ mode, seed, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, allowPaidOpenAI: process.argv.includes("--allow-paid-openai"), inferenceTransport: config.inferenceTransport });
   const validation = await validateStagehandArtifacts(run.artifactDir, [config.key]);
   const contractViolationObserved = run.result.status === "contract_violation" && run.terminal.terminalOutcome === "contract_violation_observed" && run.terminal.quiescenceVerified && run.terminal.cleanupErrors.length === 0 && run.result.observerStatus === "complete";
   const terminalOutcome = contractViolationObserved ? "expected_violation_observed" : run.terminal.terminalOutcome;
   const exitReason = contractViolationObserved ? (expectViolation ? "explicit_expected_violation_assertion_satisfied" : "expected_violation_observed_without_assertion") : run.terminal.exitReason;
-  const json = { runId: run.result.runId, adapter: "stagehand-v4", provider: "google", model: config.model, inferenceTransport: config.inferenceTransport, status: run.result.status, executionStatus: run.result.status, taskCompleted: run.result.taskCompleted, effects: run.result.observedEffects.map(({ effectId, actionId, requestId }) => ({ effectId, actionId, requestId })), fault: run.result.fault, faultTriggered: run.result.fault.triggered, observerStatus: run.result.observerStatus, contractPassed: run.result.contract?.passed ?? null, artifactValid: validation.valid, terminalOutcome, exitReason, expectedViolationAsserted: expectViolation, validationErrors: validation.errors, artifactDir: run.artifactDir };
+  const json = { runId: run.result.runId, adapter: "stagehand-v4", provider: config.model.startsWith("openai/") ? "openai" : "google", model: config.model, inferenceTransport: config.inferenceTransport, status: run.result.status, executionStatus: run.result.status, taskCompleted: run.result.taskCompleted, effects: run.result.observedEffects.map(({ effectId, actionId, requestId }) => ({ effectId, actionId, requestId })), fault: run.result.fault, faultTriggered: run.result.fault.triggered, observerStatus: run.result.observerStatus, contractPassed: run.result.contract?.passed ?? null, artifactValid: validation.valid, terminalOutcome, exitReason, expectedViolationAsserted: expectViolation, validationErrors: validation.errors, artifactDir: run.artifactDir };
   console.log(JSON.stringify(json, null, 2));
   return stagehandSingleRunExitCode({ artifactValid: validation.valid, mode: run.result.mode, executionStatus: run.result.status, taskCompleted: run.result.taskCompleted, faultTriggered: run.result.fault.triggered, observerStatus: run.result.observerStatus, contractPassed: run.result.contract?.passed ?? null, terminalOutcome, expectedViolationAsserted: expectViolation, quiescenceVerified: run.terminal.quiescenceVerified, cleanupErrors: run.terminal.cleanupErrors });
 }
@@ -128,10 +132,11 @@ async function stagehandCommand(): Promise<number> {
 }
 
 function stagehandLiveProof(metadata: Record<string, unknown>, model: string, transport: StagehandInferenceTransport): boolean {
-  if (metadata.provider !== "google" || metadata.model !== model || metadata.inferenceTransport !== transport) return false;
-  if (transport === "stagehand_client_callback_google") {
+  const provider = model === "openai/gpt-6-luna" ? "openai" : "google";
+  if (metadata.provider !== provider || metadata.model !== model || metadata.inferenceTransport !== transport) return false;
+  if (transport === "stagehand_client_callback_google" || transport === "stagehand_client_callback_openai") {
     const callback = metadata.providerCallback as Record<string, unknown> | undefined;
-    return callback?.transport === transport && callback.provider === "google" && callback.model === model && Number(callback.successfulResponses) > 0 && Number(metadata.liveInferenceCalls) === Number(callback.successfulResponses);
+    return callback?.transport === transport && callback.provider === provider && callback.model === model && Number(callback.successfulResponses) > 0 && Number(metadata.liveInferenceCalls) === Number(callback.successfulResponses);
   }
   return Number(metadata.liveInferenceCalls) > 0;
 }
@@ -145,7 +150,7 @@ async function auditStagehandCampaignTrial(run: StagehandRunSummary, expectedMod
       expectedMode,
       executionStatus: run.result.status,
       taskCompleted: run.result.taskCompleted,
-      ...(run.result.agent.error ? { errorCode: run.result.agent.error } : {}),
+      ...(typeof metadata.errorCode === "string" ? { errorCode: metadata.errorCode } : run.result.agent.error ? { errorCode: run.result.agent.error } : {}),
       faultTriggered: run.result.fault.triggered,
       upstreamCommitted: run.result.fault.upstreamCommitted,
       browserReceivedSuccess: run.result.fault.browserReceivedSuccess,
@@ -164,11 +169,12 @@ async function auditStagehandCampaignTrial(run: StagehandRunSummary, expectedMod
 }
 
 async function verifyStagehandCampaign(): Promise<number> {
-  validateStagehandFlags(new Set(["--scenario", "--allow-free-tier-gemini", "--model", "--inference-transport", "--max-model-runs", "--pilot-artifact", "--resume-report"]), process.argv.slice(3));
+  validateStagehandFlags(new Set(["--scenario", "--allow-free-tier-gemini", "--model", "--inference-transport", "--allow-paid-openai", "--max-model-runs", "--pilot-artifact", "--resume-report", "--authorize-resume-after-failure"]), process.argv.slice(3));
   if (argument("--scenario") !== "stagehand-smoke") throw new Error("Usage: pnpm bp verify --scenario stagehand-smoke --allow-free-tier-gemini --max-model-runs 9 --model google/gemini-3.6-flash --inference-transport client-callback (--resume-report <partial-report> | --pilot-artifact <validated-clean-pilot-dir>)");
   const maximum = Number(argument("--max-model-runs"));
   if (maximum !== 9) throw new Error("Stagehand acceptance campaign requires an explicit maximum of exactly 9 model-backed runs (3 clean + 3 faulted + 3 fresh replays)");
   const config = stagehandRunConfiguration();
+  if (config.model === "openai/gpt-6-luna") return await verifyOpenAICampaign({ ...config, model: config.model }, { argument: (name) => name === "--authorize-resume-after-failure" ? process.argv.includes(name) ? "true" : undefined : argument(name) });
   const resumeReportPath = argument("--resume-report");
   const acceptedCleanRuns = [] as Awaited<ReturnType<typeof executeStagehandRun>>[];
   if (resumeReportPath) {
@@ -214,11 +220,11 @@ async function verifyStagehandCampaign(): Promise<number> {
   };
   let stopReason: string | undefined;
   for (let index = 2; !resumeReportPath && index <= 3 && !stopReason; index += 1) {
-    const run = await executeStagehandRun({ mode: "clean", seed: `stagehand-clean-${index}`, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport, campaignPacer });
+    const run = await executeStagehandRun({ mode: "clean", seed: `stagehand-clean-${index}`, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, allowPaidOpenAI: process.argv.includes("--allow-paid-openai"), inferenceTransport: config.inferenceTransport, campaignPacer });
     cleanRuns.push(run); const failure = await auditNextCampaignTrial(run, "clean"); if (failure) stopReason = `clean_${failure}`;
   }
   for (let index = 1; index <= 3 && !stopReason; index += 1) {
-    const run = await executeStagehandRun({ mode: "faulted", seed: `stagehand-faulted-${index}`, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport, campaignPacer });
+    const run = await executeStagehandRun({ mode: "faulted", seed: `stagehand-faulted-${index}`, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, allowPaidOpenAI: process.argv.includes("--allow-paid-openai"), inferenceTransport: config.inferenceTransport, campaignPacer });
     faultedRuns.push(run); const failure = await auditNextCampaignTrial(run, "faulted"); if (failure) stopReason = `faulted_${failure}`;
   }
   if (stopReason) {
@@ -237,7 +243,7 @@ async function verifyStagehandCampaign(): Promise<number> {
   for (let index = 1; index <= 3 && !stopReason; index += 1) {
     const sourceSchedule = sourceSchedules[index - 1] as { seed: string; faults: FaultSchedule[] };
     const savedSchedule = sourceSchedule.faults[0]!;
-    const run = await executeStagehandRun({ mode: "faulted", seed: sourceSchedule.seed, schedule: savedSchedule, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport, campaignPacer });
+    const run = await executeStagehandRun({ mode: "faulted", seed: sourceSchedule.seed, schedule: savedSchedule, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, allowPaidOpenAI: process.argv.includes("--allow-paid-openai"), inferenceTransport: config.inferenceTransport, campaignPacer });
     reproductionRuns.push(run); const failure = await auditNextCampaignTrial(run, "faulted"); if (failure) stopReason = `reproduction_${failure}`;
   }
   const all = [...cleanRuns, ...faultedRuns, ...reproductionRuns];
@@ -604,9 +610,10 @@ async function reproduce(): Promise<number> {
 }
 
 async function reproduceStagehand(sourceDir: string, times: number): Promise<number> {
-  validateStagehandFlags(new Set(["--adapter", "--times", "--model", "--inference-transport", "--allow-free-tier-gemini"]), process.argv.slice(4));
+  validateStagehandFlags(new Set(["--adapter", "--times", "--model", "--inference-transport", "--allow-free-tier-gemini", "--allow-paid-openai"]), process.argv.slice(4));
   if (times > 9) throw new Error("Stagehand replay count must be between 1 and 9");
   const config = stagehandRunConfiguration();
+  if (config.model === "openai/gpt-6-luna") return await reproduceOpenAI(sourceDir, times, config.key);
   const sourceValidation = await validateStagehandArtifacts(sourceDir, [config.key]);
   if (!sourceValidation.valid) throw new Error(`Stagehand replay source failed artifact validation: ${sourceValidation.errors.join("; ")}`);
   const [scenario, scheduleDoc, originalResult, metadata] = await Promise.all([
@@ -619,7 +626,7 @@ async function reproduceStagehand(sourceDir: string, times: number): Promise<num
   const sourceTransport = metadata.inferenceTransport ?? "native_google_extension";
   if (sourceTransport !== config.inferenceTransport) throw new Error("Replay inference transport must match the original Stagehand artifact");
   const runs = [] as Awaited<ReturnType<typeof executeStagehandRun>>[];
-  for (let index = 0; index < times; index += 1) runs.push(await executeStagehandRun({ mode: "faulted", seed: schedule.seed, schedule, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, inferenceTransport: config.inferenceTransport }));
+  for (let index = 0; index < times; index += 1) runs.push(await executeStagehandRun({ mode: "faulted", seed: schedule.seed, schedule, model: config.model, providerApiKey: config.key, allowFreeTierGemini: true, allowPaidOpenAI: process.argv.includes("--allow-paid-openai"), inferenceTransport: config.inferenceTransport }));
   let validCount = 0;
   for (const run of runs) {
     const validation = await validateStagehandArtifacts(run.artifactDir, [config.key]);

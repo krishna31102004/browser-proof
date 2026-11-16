@@ -1,4 +1,4 @@
-export type StagehandInferenceTransport = "native_google_extension" | "stagehand_client_callback_google";
+export type StagehandInferenceTransport = "native_google_extension" | "stagehand_client_callback_google" | "stagehand_client_callback_openai";
 
 /**
  * Keep the page offline from third-party origins while allowing only the pinned
