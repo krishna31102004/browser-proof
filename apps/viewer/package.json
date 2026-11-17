@@ -4,11 +4,14 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "export:benchmark": "node scripts/export-benchmark.mjs",
+    "predev": "node scripts/export-benchmark.mjs",
+    "prebuild": "node scripts/export-benchmark.mjs",
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test tests/data.test.ts",
+    "test": "tsx --test tests/data.test.ts tests/benchmark.test.ts",
     "smoke": "tsx tests/smoke.ts"
   },
   "dependencies": {

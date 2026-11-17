@@ -28,10 +28,10 @@ Visitors arrive anonymously at a public, static portfolio site. They may have no
 
 - The viewer is a read-only Vite/React/TypeScript static app that loads a checked-in, provenance-validated dataset.
 - It presents five curated synthetic-data runs: two SupportDesk refunds cases and three AdminBench cases, including a vulnerable/hardened comparison under one saved DOM-reorder schedule.
-- The two verified fault types are `commit_then_response_lost` and `dom_replace_after_observation`. The broader ten-fault plan and 36-case campaign are targets, not completed claims.
+- The five curated cases use two fault types, `commit_then_response_lost` and `dom_replace_after_observation`. Ten fault types are covered by regression tests. A 36-case deterministic benchmark (reference agent, five fault types exercised) is published in `benchmarks/results.v1.json` and shown on the Benchmark page with its limitations: it validates the harness, not real-agent failure rates.
 - The public deployment contains static evidence only. It has no hosted agent, runner, backend, payment endpoint, authentication, or live execution.
 - All current cases, event sequences, source IDs, action/request/effect correlations, schedules, contracts, independently observed effects, source screenshots, and evidence downloads must remain true and available.
-- No additional fault type, benchmark, backend, database, hosted runner, or unrelated roadmap feature belongs in this UI task.
+- No backend, database, hosted runner, or unrelated roadmap feature belongs in the viewer. Benchmark figures come only from the committed report via a build-time export.
 
 ## Brand Commitments
 

@@ -6,15 +6,38 @@ The local demonstrations use synthetic SupportDesk, AdminBench, and ShopBench da
 
 The OpenAI GPT-6 Luna Stagehand campaign completed nine artifact-validated local trials: three clean runs with one refund each, three post-commit response-loss runs with two independently observed refunds each, and three fresh-schedule reproductions with matching violation outcomes. A read-only review independently validated all nine artifacts. In the faulted and replay trials, the adapter began reconsidering the task before the browser observed response loss; the later model action and second refund followed the fault. These observations do not prove that response loss caused the initial retry decision. The historical Gemini campaign remains incomplete. The 36-case benchmark is frozen and was executed once locally with the deterministic reference agent: 12/12 clean passes, 24/24 seeded failures detected, 24/24 fresh reproductions, 0 false positives (see [docs/BENCHMARK.md](docs/BENCHMARK.md) for what that does and does not show).
 
-## Public evidence viewer
+## Public site
 
-**Public demo:** [browserproof.vercel.app](https://browserproof.vercel.app)
+**Public site:** [browserproof.vercel.app](https://browserproof.vercel.app)
 
-The public Vercel site serves five curated records from genuine local Playwright runs. It shows the browser/agent timeline beside independently queried backend effects, the SupportDesk commit-then-response-loss violation, and the AdminBench vulnerable/hardened comparison. The Vercel deployment contains static recorded evidence only: no hosted runner, live browser agent, controlled backend, or refund endpoint is deployed.
+One lost response. Two refunds committed. BrowserProof tests AI browser agents under controlled browser and network faults, then checks what the backend actually committed against an independently queried effects ledger and typed contracts. Clicks, browser responses and an agent's own report do not establish that an operation happened correctly; the ledger does.
 
-Start with the overview: it tells the verified refund incident in one sentence, then lets you select the recorded commit, browser failure, retry, second commit, and contract result. Each step opens its source event. Follow the case link for the complete dual-lane timeline, effect IDs, contract, screenshots, sanitized artifacts, and local reproduction command.
+The site is a static, read-only presentation of recorded evidence. Nothing on it executes an agent, and the replay on the landing page is a replay of recorded events, not a live browser. It has six views: a landing page with the recorded refund incident, an evidence explorer, five case pages (dual-lane browser/ledger timeline, correlated IDs, screenshots, raw evidence files, reproduction commands), the AdminBench agent comparison, the benchmark results, and a not-found page. Existing `#/case/:id` links are unchanged.
 
-![BrowserProof overview showing the recorded refund failure and independently confirmed effects](docs/images/browserproof-overview-prompt06.png)
+![BrowserProof landing page](docs/images/site-landing.png)
+
+![The recorded refund incident replay: browser lane above the independent ledger lane](docs/images/site-showcase.png)
+
+![AdminBench comparison: same saved fault, different record changed](docs/images/site-comparison.jpg)
+
+### Benchmark results (with their limits)
+
+The published 36-case benchmark ([`benchmarks/results.v1.json`](benchmarks/results.v1.json), source commit `24c1323b1462f8d82287f4bf1d20276e3e967baf`, clean working tree) recorded 12/12 clean cases passing, 24/24 seeded violations detected, 24/24 fresh reproductions and 0 false positives, with 0 infrastructure, observer or injection failures. **This comes from a deterministic reference agent (no language model) running against test apps that were deliberately made non-idempotent. It validates that the harness detects the violations it was built to produce; it is not an estimate of how often real AI agents fail and not a universal detection accuracy.** The benchmark exercises five of the ten fault types. The separate 9-trial OpenAI GPT-6 Luna campaign does not show that the lost response caused the retry decision. See [docs/BENCHMARK.md](docs/BENCHMARK.md).
+
+![Benchmark page: figures, scope note and the 36-case matrix](docs/images/site-benchmark.jpg)
+
+### Frontend development
+
+React 19, TypeScript and Vite 6 with hand-written, token-driven CSS (no Tailwind, no component library, no animation library). Fonts are self-hosted subsets of Geist, Geist Mono and Instrument Serif (SIL OFL) in `apps/viewer/public/fonts/`. The design system is documented in [`DESIGN_SPEC.md`](DESIGN_SPEC.md), [`TYPE_SYSTEM.md`](TYPE_SYSTEM.md) and [`REVAMP_AUDIT.md`](REVAMP_AUDIT.md).
+
+```bash
+pnpm --filter @browserproof/viewer dev      # local dev server
+pnpm viewer:build                          # typecheck + production build
+pnpm --filter @browserproof/viewer test    # evidence, benchmark export, router and style-system tests
+pnpm viewer:smoke                          # real Chromium: 9 routes x 4 widths, showcase replay, reduced motion
+```
+
+Evidence provenance: the five cases in `apps/viewer/public/demo/` are exported from genuine local Playwright runs (source run IDs and SHA-256 fingerprints are in `index.json` and shown on the Evidence page). `apps/viewer/public/demo/benchmark.json` is a build-time allowlisted export of `benchmarks/results.v1.json`; the viewer recomputes every headline count from the case rows and refuses to render mismatched totals. A test fails if the committed export drifts from the report.
 
 To verify the public deployment and all published evidence assets from a local checkout:
 
@@ -22,7 +45,7 @@ To verify the public deployment and all published evidence assets from a local c
 pnpm run viewer:smoke:remote -- --url https://browserproof.vercel.app
 ```
 
-This opens the actual anonymous HTTPS site in Chromium, checks every referenced JSON/JSONL/image asset, exercises the evidence routes and navigation, and captures desktop/tablet/mobile screenshots under the ignored `apps/viewer/.visual-review/remote-browserproof.vercel.app/` directory. It does not start a local preview server.
+This opens the actual anonymous HTTPS site in Chromium, checks every referenced JSON/JSONL/image asset, runs the same route, showcase, accessibility-semantics and reduced-motion checks as the local smoke, and captures desktop/tablet/mobile screenshots under the ignored `apps/viewer/.visual-review/remote-browserproof.vercel.app/` directory. It does not start a local preview server.
 
 ## Local runner
 
@@ -113,7 +136,7 @@ pnpm bp repro artifacts/<FAULTED_RUN_ID> --times 3
 
 The two fault-adapted workflows reuse existing fault types: checkout `commit_then_response_lost` independently confirms the first `C-501` commit before failing browser delivery, exposing a second commit under the vulnerable UI retry and a one-effect recovery after the hardened visible fresh-status GET. Shipping `dom_replace_after_observation` reorders actual order rows after observation; vulnerable stale-index selection updates `O-501`, while hardened stable-ID resolution updates only `O-502`. The six-cell 18-trial comparison for each workflow includes clean and faulted vulnerable/hardened runs plus fresh saved-schedule replays. Cancellation of `O-503` and application of `SAVE10` to `C-504` are clean-only baselines; coupon arithmetic is verified in integer cents. `verify --scenario shopbench` requires all 42 runs, unique IDs, independent effect/state evidence, valid screenshots/traces, exact schedules, and matching replay signatures. Its report is written to ignored `artifacts/shopbench-verification-<id>.json`.
 
-The contracts, canonical schedule registry, exact app/scenario bindings, and honest candidate workflow inventory are documented in [docs/CONTRACTS_AND_SCHEDULES.md](docs/CONTRACTS_AND_SCHEDULES.md) and [benchmarks/workflows.v1.json](benchmarks/workflows.v1.json). Runtime schedule checks reject unsupported cross-app targets and unknown fields while preserving schema `1.0.0` and existing replay IDs. The inventory records the executable scenarios and the 12 frozen benchmark variants; it explicitly tracks missing second fault pairings. The frozen benchmark remains **0/36 NOT EXECUTED** and detection rate **UNMEASURED**.
+The contracts, canonical schedule registry, exact app/scenario bindings, and honest candidate workflow inventory are documented in [docs/CONTRACTS_AND_SCHEDULES.md](docs/CONTRACTS_AND_SCHEDULES.md) and [benchmarks/workflows.v1.json](benchmarks/workflows.v1.json). Runtime schedule checks reject unsupported cross-app targets and unknown fields while preserving schema `1.0.0` and existing replay IDs. The inventory records the executable scenarios and the 12 frozen benchmark variants; the frozen 36-case benchmark has since been executed (see the benchmark results above and [docs/BENCHMARK.md](docs/BENCHMARK.md)).
 
 Prompt 10 passed the complete **42/42** local Chromium campaign: six 3/3 clean, faulted and fresh-replay cells for each of the two fault-adapted workflows, plus 3/3 clean cancellation and 3/3 clean coupon trials. The vulnerable checkout produces two independently observed `checkout_committed` effects for `C-501`; hardened checkout confirms visible fresh status and produces one. Vulnerable shipping commits one `shipping_updated` effect to the wrong `O-501`; hardened shipping commits one to intended `O-502`. The coupon baseline verifies $100.00 subtotal, $10.00 discount and $90.00 total using integer cents. The CI workflow repeats and validates this full campaign against its source commit. These are four ShopBench workflow foundations across three controlled applications, not additional fault types. (At Prompt 11 time the 36-case benchmark was not yet executed; it has since been frozen and run, see [docs/BENCHMARK.md](docs/BENCHMARK.md).) The public Evidence Journal is unchanged.
 
@@ -121,9 +144,9 @@ Prompt 10 passed the complete **42/42** local Chromium campaign: six 3/3 clean, 
 
 The Stagehand v4 adapter supports explicitly selected Gemini transports and a Node-side OpenAI GPT-6 Luna callback. It reads provider credentials from the local runner process, never writes them to artifacts, and never runs provider calls in CI. `pnpm bp stagehand preflight` performs no inference; `pnpm bp stagehand spike` proves the local same-browser transport without inference. Those checks and mocked adapter tests are not live-model proof. The adapter fences a timed-out local browser before independent ledger reconciliation and separates artifact validity, task completion and CLI exit status. See [the Stagehand guide](docs/STAGEHAND_AGENT_ADAPTER.md) for limits and operating instructions. OpenAI requests are billable and require explicit opt-in; no provider fallback is enabled.
 
-Prompt 11 consolidates the reusable evidence contract evaluators and the strict `FAULT_SCHEDULE_REGISTRY` in `@browserproof/contracts`. Runtime validation binds a fault type to its scenario, application, target, trigger, phase, count, seed, and legal configuration while preserving the existing CLI and artifact schema. ShopBench artifact validation now requires and cross-checks request evidence, backend state copies, full workflow final state, and the shipping target list. The 42/42 ShopBench campaign, all previous fault campaigns, unit/type checks and reviewer audit passed in local Chromium; source-matched [GitHub Actions run 41029713427](https://github.com/krishna31102004/browser-proof/actions/runs/41029713427) passed on `0a2d75b071f93dd687528ed97480ba5e63613466`. See [the contract and schedule guide](docs/CONTRACTS_AND_SCHEDULES.md) and the versioned [candidate workflow inventory](benchmarks/workflows.v1.json). The inventory proposes—but does not freeze—the eventual 12-variant/36-case benchmark; the current measured result remains **0/36 NOT EXECUTED** and detection rate **UNMEASURED**.
+Prompt 11 consolidates the reusable evidence contract evaluators and the strict `FAULT_SCHEDULE_REGISTRY` in `@browserproof/contracts`. Runtime validation binds a fault type to its scenario, application, target, trigger, phase, count, seed, and legal configuration while preserving the existing CLI and artifact schema. ShopBench artifact validation now requires and cross-checks request evidence, backend state copies, full workflow final state, and the shipping target list. The 42/42 ShopBench campaign, all previous fault campaigns, unit/type checks and reviewer audit passed in local Chromium; source-matched [GitHub Actions run 41029713427](https://github.com/krishna31102004/browser-proof/actions/runs/41029713427) passed on `0a2d75b071f93dd687528ed97480ba5e63613466`. See [the contract and schedule guide](docs/CONTRACTS_AND_SCHEDULES.md) and the versioned [candidate workflow inventory](benchmarks/workflows.v1.json). At that point the inventory proposed, but did not yet freeze, the 12-variant/36-case benchmark; that benchmark was later frozen and executed (24/24 seeded violations detected by a deterministic reference agent; see [docs/BENCHMARK.md](docs/BENCHMARK.md) for what that does and does not show).
 
-## Static evidence workbench
+## Evidence dataset
 
 Five checked-in cases are exported from fresh, genuine local Playwright runs: SupportDesk clean and response-loss, AdminBench vulnerable clean, and vulnerable/hardened runs under the same DOM reorder schedule. The exporter validates source JSON/JSONL, correlations, independently observed effect and final state, fault chronology, trace ZIP, screenshots and contract before replacing the published static bundle. It writes only allowlisted event fields and the UI's needed data; raw trace ZIPs and local URLs are not published.
 
@@ -143,7 +166,7 @@ pnpm viewer:smoke
 pnpm --filter @browserproof/viewer preview
 ```
 
-The viewer has no runtime backend, credentials, or environment-variable dependency. It presents the browser-visible and backend-confirmed lanes, source-backed case pages, the AdminBench A/B comparison, filters, event details, screenshots, sanitized evidence files and verified local reproduction commands. The timeline is playback of recorded event data; rerunning the saved schedule in a new browser context is a separate CLI operation.
+The viewer has no runtime backend, credentials, or environment-variable dependency. It presents the browser/agent and independent-ledger lanes, source-backed case pages, the AdminBench A/B comparison, filters, event details, screenshots, sanitized evidence files and verified local reproduction commands. The timeline is playback of recorded event data; rerunning the saved schedule in a new browser context is a separate CLI operation.
 
 ## Continuous integration
 

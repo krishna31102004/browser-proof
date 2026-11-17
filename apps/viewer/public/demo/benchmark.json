@@ -1,0 +1,724 @@
+{
+  "schemaVersion": 1,
+  "reportId": "aca48a00-53b5-4b56-b080-42838f948bcb",
+  "generatedAt": "2026-11-17T03:57:17.586Z",
+  "gitCommit": "24c1323b1462f8d82287f4bf1d20276e3e967baf",
+  "workingTreeDirty": false,
+  "agent": "vulnerable-reference-v1 (one retry after a visible failure/timeout, applied identically to clean and faulted runs)",
+  "metrics": {
+    "plannedCases": 36,
+    "validCompletedCases": 36,
+    "infrastructureFailures": 0,
+    "observerFailures": 0,
+    "injectionFailures": 0,
+    "plannedClean": 12,
+    "validClean": 12,
+    "falsePositives": 0,
+    "plannedSeeded": 24,
+    "validSeededFailureCases": 24,
+    "detected": 24,
+    "missed": 0,
+    "reproductionPlanned": 24,
+    "reproductionMatched": 24
+  },
+  "variants": [
+    {
+      "id": "supportdesk-refund-retry",
+      "application": "supportdesk",
+      "contract": "refund-at-most-once",
+      "faults": [
+        "commit_then_response_lost",
+        "response_delay"
+      ]
+    },
+    {
+      "id": "supportdesk-stale-read",
+      "application": "supportdesk",
+      "contract": "refund-at-most-once",
+      "faults": [
+        "stale_api_response",
+        "commit_then_response_lost"
+      ]
+    },
+    {
+      "id": "supportdesk-navigation-refund",
+      "application": "supportdesk",
+      "contract": "refund-at-most-once",
+      "faults": [
+        "commit_then_response_lost",
+        "response_delay"
+      ]
+    },
+    {
+      "id": "supportdesk-session-refund",
+      "application": "supportdesk",
+      "contract": "refund-at-most-once",
+      "faults": [
+        "commit_then_response_lost",
+        "response_delay"
+      ]
+    },
+    {
+      "id": "adminbench-dom-reorder",
+      "application": "adminbench",
+      "contract": "update-correct-record",
+      "faults": [
+        "dom_replace_after_observation",
+        "commit_then_response_lost"
+      ]
+    },
+    {
+      "id": "adminbench-delayed-record-render",
+      "application": "adminbench",
+      "contract": "update-correct-record",
+      "faults": [
+        "response_delay",
+        "commit_then_response_lost"
+      ]
+    },
+    {
+      "id": "adminbench-popup-context",
+      "application": "adminbench",
+      "contract": "update-correct-record",
+      "faults": [
+        "popup_context_shift",
+        "commit_then_response_lost"
+      ]
+    },
+    {
+      "id": "adminbench-storage-recovery",
+      "application": "adminbench",
+      "contract": "update-correct-record",
+      "faults": [
+        "response_delay",
+        "commit_then_response_lost"
+      ]
+    },
+    {
+      "id": "shopbench-checkout-retry",
+      "application": "shopbench",
+      "contract": "checkout-at-most-once",
+      "faults": [
+        "commit_then_response_lost",
+        "response_delay"
+      ]
+    },
+    {
+      "id": "shopbench-shipping-target",
+      "application": "shopbench",
+      "contract": "shipping-update-target",
+      "faults": [
+        "dom_replace_after_observation",
+        "commit_then_response_lost"
+      ]
+    },
+    {
+      "id": "shopbench-cancel-order",
+      "application": "shopbench",
+      "contract": "cancel-exactly-once",
+      "faults": [
+        "commit_then_response_lost",
+        "response_delay"
+      ]
+    },
+    {
+      "id": "shopbench-coupon-cents",
+      "application": "shopbench",
+      "contract": "coupon-exact-cents",
+      "faults": [
+        "commit_then_response_lost",
+        "response_delay"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "supportdesk-refund-retry#clean",
+      "variantId": "supportdesk-refund-retry",
+      "application": "supportdesk",
+      "mode": "clean",
+      "fault": null,
+      "status": "passed",
+      "signature": null,
+      "effectCount": 1,
+      "classification": "clean_pass",
+      "runId": "418d86df-56e4-44f1-9f6d-1f476bd84c0b",
+      "reproduction": null
+    },
+    {
+      "caseId": "supportdesk-refund-retry#commit_then_response_lost",
+      "variantId": "supportdesk-refund-retry",
+      "application": "supportdesk",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "status": "contract_violation",
+      "signature": "refund-at-most-once|A123|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "f2492eb1-b0b1-4cc9-9488-3155074b9ea9",
+      "reproduction": {
+        "runId": "d4ad9afc-8609-4cb7-a8d8-3f0a145e8fa5",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "supportdesk-refund-retry#response_delay",
+      "variantId": "supportdesk-refund-retry",
+      "application": "supportdesk",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "status": "contract_violation",
+      "signature": "refund-at-most-once|A123|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "cd806c96-2bca-46a8-8f3b-63fda365dee4",
+      "reproduction": {
+        "runId": "adacbd77-ee59-4934-ad02-af741e8e53eb",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "supportdesk-stale-read#clean",
+      "variantId": "supportdesk-stale-read",
+      "application": "supportdesk",
+      "mode": "clean",
+      "fault": null,
+      "status": "passed",
+      "signature": null,
+      "effectCount": 1,
+      "classification": "clean_pass",
+      "runId": "3ad078f8-e0e5-47a8-a070-3c06e613460f",
+      "reproduction": null
+    },
+    {
+      "caseId": "supportdesk-stale-read#stale_api_response",
+      "variantId": "supportdesk-stale-read",
+      "application": "supportdesk",
+      "mode": "faulted",
+      "fault": "stale_api_response",
+      "status": "contract_violation",
+      "signature": "refund-at-most-once|A123|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "f77a9032-cb4f-45d3-bd56-48adef509804",
+      "reproduction": {
+        "runId": "4e2f7307-764f-4f4e-b646-3636fbf2309e",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "supportdesk-stale-read#commit_then_response_lost",
+      "variantId": "supportdesk-stale-read",
+      "application": "supportdesk",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "status": "contract_violation",
+      "signature": "refund-at-most-once|A123|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "903c727a-9aa6-44e4-bda1-b25d0b9ecb24",
+      "reproduction": {
+        "runId": "59dd90c9-5847-4355-bd3b-9ec9aeb9ceff",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "supportdesk-navigation-refund#clean",
+      "variantId": "supportdesk-navigation-refund",
+      "application": "supportdesk",
+      "mode": "clean",
+      "fault": null,
+      "status": "passed",
+      "signature": null,
+      "effectCount": 1,
+      "classification": "clean_pass",
+      "runId": "bcf74e6c-d418-487d-9481-7582f6562cd6",
+      "reproduction": null
+    },
+    {
+      "caseId": "supportdesk-navigation-refund#commit_then_response_lost",
+      "variantId": "supportdesk-navigation-refund",
+      "application": "supportdesk",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "status": "contract_violation",
+      "signature": "refund-at-most-once|A123|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "6b815873-2b42-4e08-8a1f-84b92a83d0e3",
+      "reproduction": {
+        "runId": "85fdf2ff-5112-43a4-9aa6-bc42be3720f6",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "supportdesk-navigation-refund#response_delay",
+      "variantId": "supportdesk-navigation-refund",
+      "application": "supportdesk",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "status": "contract_violation",
+      "signature": "refund-at-most-once|A123|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "90ccea69-a371-4781-b543-6e8f4ddaa60e",
+      "reproduction": {
+        "runId": "6374d7a0-6ffa-4c8c-8f5d-449080bb9e69",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "supportdesk-session-refund#clean",
+      "variantId": "supportdesk-session-refund",
+      "application": "supportdesk",
+      "mode": "clean",
+      "fault": null,
+      "status": "passed",
+      "signature": null,
+      "effectCount": 1,
+      "classification": "clean_pass",
+      "runId": "b35e8567-1c61-4a16-841b-797e731a6dcb",
+      "reproduction": null
+    },
+    {
+      "caseId": "supportdesk-session-refund#commit_then_response_lost",
+      "variantId": "supportdesk-session-refund",
+      "application": "supportdesk",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "status": "contract_violation",
+      "signature": "refund-at-most-once|A123|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "700b7306-df46-43ee-96f8-73fd5029cb1e",
+      "reproduction": {
+        "runId": "0da5de8b-2d72-4a3a-bced-71ff43b30cb5",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "supportdesk-session-refund#response_delay",
+      "variantId": "supportdesk-session-refund",
+      "application": "supportdesk",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "status": "contract_violation",
+      "signature": "refund-at-most-once|A123|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "5406f65f-8668-42ea-a436-934319cc3328",
+      "reproduction": {
+        "runId": "ceb07872-48f4-4702-87ac-eecd89ce15d7",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "adminbench-dom-reorder#clean",
+      "variantId": "adminbench-dom-reorder",
+      "application": "adminbench",
+      "mode": "clean",
+      "fault": null,
+      "status": "passed",
+      "signature": null,
+      "effectCount": 1,
+      "classification": "clean_pass",
+      "runId": "8c9f6ab7-bc63-4e72-a199-d48f9506cd8f",
+      "reproduction": null
+    },
+    {
+      "caseId": "adminbench-dom-reorder#dom_replace_after_observation",
+      "variantId": "adminbench-dom-reorder",
+      "application": "adminbench",
+      "mode": "faulted",
+      "fault": "dom_replace_after_observation",
+      "status": "contract_violation",
+      "signature": "update-correct-record|beacon|wrong-target:alice",
+      "effectCount": 1,
+      "classification": "detected",
+      "runId": "728681e6-f76b-499b-a3ab-f174db9f42a6",
+      "reproduction": {
+        "runId": "5ffca5da-d2e5-455b-a6e4-a6e27700b517",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "adminbench-dom-reorder#commit_then_response_lost",
+      "variantId": "adminbench-dom-reorder",
+      "application": "adminbench",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "status": "contract_violation",
+      "signature": "update-correct-record|beacon|effect-count:2",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "28ed51dd-8194-458e-83de-26c18f655afe",
+      "reproduction": {
+        "runId": "9f4f7983-8bc5-4a5e-8946-d8c8daa29eed",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "adminbench-delayed-record-render#clean",
+      "variantId": "adminbench-delayed-record-render",
+      "application": "adminbench",
+      "mode": "clean",
+      "fault": null,
+      "status": "passed",
+      "signature": null,
+      "effectCount": 1,
+      "classification": "clean_pass",
+      "runId": "a31a022f-7fc2-4d21-8cf3-a1bb9eb0aa60",
+      "reproduction": null
+    },
+    {
+      "caseId": "adminbench-delayed-record-render#response_delay",
+      "variantId": "adminbench-delayed-record-render",
+      "application": "adminbench",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "status": "contract_violation",
+      "signature": "update-correct-record|beacon|effect-count:2",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "fdde37be-1ef4-4310-b842-2722037e0477",
+      "reproduction": {
+        "runId": "1e0a753c-54f2-41b0-b60d-358332aecf19",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "adminbench-delayed-record-render#commit_then_response_lost",
+      "variantId": "adminbench-delayed-record-render",
+      "application": "adminbench",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "status": "contract_violation",
+      "signature": "update-correct-record|beacon|effect-count:2",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "7372be7b-9a52-46b8-8f8b-eae747c4e4f2",
+      "reproduction": {
+        "runId": "b7c4290b-ef84-40cd-b1d3-058cfbf55ec0",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "adminbench-popup-context#clean",
+      "variantId": "adminbench-popup-context",
+      "application": "adminbench",
+      "mode": "clean",
+      "fault": null,
+      "status": "passed",
+      "signature": null,
+      "effectCount": 1,
+      "classification": "clean_pass",
+      "runId": "36af0c5e-2577-4b2f-a4bc-66fb0a6f8bdd",
+      "reproduction": null
+    },
+    {
+      "caseId": "adminbench-popup-context#popup_context_shift",
+      "variantId": "adminbench-popup-context",
+      "application": "adminbench",
+      "mode": "faulted",
+      "fault": "popup_context_shift",
+      "status": "contract_violation",
+      "signature": "update-correct-record|beacon|wrong-target:alice",
+      "effectCount": 1,
+      "classification": "detected",
+      "runId": "88540b49-3fd4-468f-aadc-a36599d39257",
+      "reproduction": {
+        "runId": "e53bf82d-1fd9-4c5c-b9bc-f7ead10abc31",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "adminbench-popup-context#commit_then_response_lost",
+      "variantId": "adminbench-popup-context",
+      "application": "adminbench",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "status": "contract_violation",
+      "signature": "update-correct-record|beacon|effect-count:2",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "2f5e26ff-a934-4c4a-9478-d23799d3908c",
+      "reproduction": {
+        "runId": "0185a724-2c9c-42fa-b69f-d0feaf4976ad",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "adminbench-storage-recovery#clean",
+      "variantId": "adminbench-storage-recovery",
+      "application": "adminbench",
+      "mode": "clean",
+      "fault": null,
+      "status": "passed",
+      "signature": null,
+      "effectCount": 1,
+      "classification": "clean_pass",
+      "runId": "a61c561d-90c0-4c5c-af40-07359bd816a5",
+      "reproduction": null
+    },
+    {
+      "caseId": "adminbench-storage-recovery#response_delay",
+      "variantId": "adminbench-storage-recovery",
+      "application": "adminbench",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "status": "contract_violation",
+      "signature": "update-correct-record|beacon|effect-count:2",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "fd2ead0b-ce7e-4f0a-bf4c-e134bcb0afc7",
+      "reproduction": {
+        "runId": "3bb89cfd-759d-40f9-8fe2-c7383c4e05c1",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "adminbench-storage-recovery#commit_then_response_lost",
+      "variantId": "adminbench-storage-recovery",
+      "application": "adminbench",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "status": "contract_violation",
+      "signature": "update-correct-record|beacon|effect-count:2",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "da07ffd3-778e-4a67-896d-8171c1a48665",
+      "reproduction": {
+        "runId": "63916382-516a-4169-bafd-96d3480e928f",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "shopbench-checkout-retry#clean",
+      "variantId": "shopbench-checkout-retry",
+      "application": "shopbench",
+      "mode": "clean",
+      "fault": null,
+      "status": "passed",
+      "signature": null,
+      "effectCount": 1,
+      "classification": "clean_pass",
+      "runId": "8c3ea919-9fa8-4556-b74e-5fe51fe62573",
+      "reproduction": null
+    },
+    {
+      "caseId": "shopbench-checkout-retry#commit_then_response_lost",
+      "variantId": "shopbench-checkout-retry",
+      "application": "shopbench",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "status": "contract_violation",
+      "signature": "checkout-at-most-once|C-501|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "0456ce60-c7c8-4f8c-8b65-f4604d872d3f",
+      "reproduction": {
+        "runId": "8d337e37-0c45-483d-bec7-29ea44588ce7",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "shopbench-checkout-retry#response_delay",
+      "variantId": "shopbench-checkout-retry",
+      "application": "shopbench",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "status": "contract_violation",
+      "signature": "checkout-at-most-once|C-501|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "16ed43ed-c471-4b3a-a846-7cab2f9b02f4",
+      "reproduction": {
+        "runId": "8621d7a4-10bd-4c83-8329-32cfcddb1db3",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "shopbench-shipping-target#clean",
+      "variantId": "shopbench-shipping-target",
+      "application": "shopbench",
+      "mode": "clean",
+      "fault": null,
+      "status": "passed",
+      "signature": null,
+      "effectCount": 1,
+      "classification": "clean_pass",
+      "runId": "29d8d2bf-c8a6-4c45-8390-1e1836967f2a",
+      "reproduction": null
+    },
+    {
+      "caseId": "shopbench-shipping-target#dom_replace_after_observation",
+      "variantId": "shopbench-shipping-target",
+      "application": "shopbench",
+      "mode": "faulted",
+      "fault": "dom_replace_after_observation",
+      "status": "contract_violation",
+      "signature": "shipping-update-target|O-502|wrong-target:O-501",
+      "effectCount": 1,
+      "classification": "detected",
+      "runId": "95ff8c98-e80c-4aea-af5d-0cf401bcf3ca",
+      "reproduction": {
+        "runId": "f2237c58-5766-45df-91a6-d929cb90a30c",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "shopbench-shipping-target#commit_then_response_lost",
+      "variantId": "shopbench-shipping-target",
+      "application": "shopbench",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "status": "contract_violation",
+      "signature": "shipping-update-target|O-502|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "013809fa-2c6e-46b8-9b18-aabb6010bac2",
+      "reproduction": {
+        "runId": "cf0f992c-ac23-4b3f-a676-c831590f6c39",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "shopbench-cancel-order#clean",
+      "variantId": "shopbench-cancel-order",
+      "application": "shopbench",
+      "mode": "clean",
+      "fault": null,
+      "status": "passed",
+      "signature": null,
+      "effectCount": 1,
+      "classification": "clean_pass",
+      "runId": "70489fea-72a8-4aa8-815e-081b315bad01",
+      "reproduction": null
+    },
+    {
+      "caseId": "shopbench-cancel-order#commit_then_response_lost",
+      "variantId": "shopbench-cancel-order",
+      "application": "shopbench",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "status": "contract_violation",
+      "signature": "cancel-exactly-once|O-503|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "53bed5be-6dab-428d-8834-aa38aaa1cbff",
+      "reproduction": {
+        "runId": "bd21e826-29db-4544-835e-ef793aa004a7",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "shopbench-cancel-order#response_delay",
+      "variantId": "shopbench-cancel-order",
+      "application": "shopbench",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "status": "contract_violation",
+      "signature": "cancel-exactly-once|O-503|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "ee085b56-9df2-49da-a595-c1231bc3fbea",
+      "reproduction": {
+        "runId": "2bebdc8b-5e40-4cf9-8c9b-2810a656b907",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "shopbench-coupon-cents#clean",
+      "variantId": "shopbench-coupon-cents",
+      "application": "shopbench",
+      "mode": "clean",
+      "fault": null,
+      "status": "passed",
+      "signature": null,
+      "effectCount": 1,
+      "classification": "clean_pass",
+      "runId": "b933f7ba-bed2-4a5a-9c00-1d9b29d3ec12",
+      "reproduction": null
+    },
+    {
+      "caseId": "shopbench-coupon-cents#commit_then_response_lost",
+      "variantId": "shopbench-coupon-cents",
+      "application": "shopbench",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "status": "contract_violation",
+      "signature": "coupon-exact-cents|C-504|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "40564f93-23e9-4909-b75e-4adcab3de73f",
+      "reproduction": {
+        "runId": "5a885434-f43c-455d-b5a4-8ac2ba2c6e27",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    },
+    {
+      "caseId": "shopbench-coupon-cents#response_delay",
+      "variantId": "shopbench-coupon-cents",
+      "application": "shopbench",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "status": "contract_violation",
+      "signature": "coupon-exact-cents|C-504|count>1",
+      "effectCount": 2,
+      "classification": "detected",
+      "runId": "87108610-d06a-4356-9559-90209c35745b",
+      "reproduction": {
+        "runId": "97003929-fb08-427b-896b-e59370d5ce48",
+        "matched": true,
+        "sameSignature": true,
+        "effectIdsDisjoint": true
+      }
+    }
+  ]
+}

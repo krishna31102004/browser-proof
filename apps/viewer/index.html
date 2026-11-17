@@ -3,12 +3,46 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f3f5f6" />
-    <meta name="description" content="BrowserProof is a read-only workbench for recorded browser-agent evidence." />
-    <title>BrowserProof — Evidence workbench</title>
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#131110" />
+    <title>BrowserProof · Verify What Browser Agents Actually Did</title>
+    <meta name="description" content="BrowserProof tests AI browser agents under controlled faults and verifies what the backend actually committed, using an independently queried effects ledger and typed contracts." />
+    <meta name="author" content="Krishna Balaji" />
+    <link rel="canonical" href="https://browserproof.vercel.app/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="BrowserProof" />
+    <meta property="og:url" content="https://browserproof.vercel.app/" />
+    <meta property="og:title" content="BrowserProof · Verify What Browser Agents Actually Did" />
+    <meta property="og:description" content="One lost response. Two refunds committed. A reliability-testing framework that checks browser agents against an independent backend ledger." />
+    <meta property="og:image" content="https://browserproof.vercel.app/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="BrowserProof. One lost response. Two refunds committed. A two-lane diagram shows one failed browser request above two ledger entries." />
+    <meta property="og:locale" content="en_US" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="BrowserProof · Verify What Browser Agents Actually Did" />
+    <meta name="twitter:description" content="One lost response. Two refunds committed. A reliability-testing framework that checks browser agents against an independent backend ledger." />
+    <meta name="twitter:image" content="https://browserproof.vercel.app/og.png" />
+    <meta name="twitter:image:alt" content="BrowserProof. One lost response. Two refunds committed." />
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32x32.png" sizes="32x32" type="image/png" />
+    <link rel="icon" href="/favicon-16x16.png" sizes="16x16" type="image/png" />
+    <link rel="shortcut icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="preload" href="/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/instrument-serif-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <style>html{background:#131110}</style>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <h1>BrowserProof: verify what browser agents actually did</h1>
+      <p>BrowserProof tests AI browser agents under controlled browser and network faults, then checks what the backend actually committed against an independently queried effects ledger. This site needs JavaScript to show its recorded evidence.</p>
+      <p><a href="https://github.com/krishna31102004/browser-proof">BrowserProof on GitHub</a> · <a href="https://github.com/krishna31102004/browser-proof/blob/main/benchmarks/results.v1.json">Benchmark results file</a></p>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
