@@ -983,7 +983,7 @@ async function benchmarkCommand(): Promise<number> {
   if (sub === "run") {
     const only = argument("--only")?.split(",").filter(Boolean);
     let dirtyAtStart: boolean | null = null;
-    try { dirtyAtStart = execFileSync("git", ["status", "--porcelain", "--", ".", ":!artifacts", ":!benchmarks/results.v1.json"], { encoding: "utf8" }).trim().length > 0; } catch { /* not a repository */ }
+    try { dirtyAtStart = execFileSync("git", ["status", "--porcelain", "--untracked-files=no", "--", ".", ":!artifacts", ":!benchmarks/results.v1.json"], { encoding: "utf8" }).trim().length > 0; } catch { /* not a repository */ }
     const report = await runBenchmark({ ...(only ? { only } : {}), reproduce: !process.argv.includes("--no-repro"), onProgress: (row) => console.error(`${row.caseId}: ${row.classification}${row.reproduction ? ` repro=${row.reproduction.matched}` : ""}`) });
     try { report.gitCommit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(); report.workingTreeDirty = dirtyAtStart; } catch { /* not a repository */ }
     const full = !only?.length;
