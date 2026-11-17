@@ -2,7 +2,9 @@
 
 ## Scope and evidence labels
 
-BrowserProof's model-backed adapter is a local Stagehand v4 runner for the synthetic SupportDesk A123 refund workflow. The approved live configuration for Prompt 12B is **Google Gemini 3.8 Flash**, Stagehand model name `google/gemini-3.8-flash`, provider model ID `gemini-3.8-flash`, and `GEMINI_API_KEY`. The pinned SDK is `@browserbasehq/stagehand` 4.3.0. Legacy OpenAI model identity remains readable in the typed provider registry for compatibility, but every live CLI path in this milestone rejects it before browser startup. There is no model fallback or Browserbase Model Gateway.
+BrowserProof's model-backed adapter is a local Stagehand v4 runner for the synthetic SupportDesk A123 refund workflow. It supports explicitly selected Google Gemini configurations and the Node-side OpenAI `openai/gpt-6-luna` callback. The pinned SDK is `@browserbasehq/stagehand` 4.3.0. There is no provider or model fallback and no Browserbase Model Gateway. The Gemini-specific discussion and commands below document that separately labeled integration.
+
+For OpenAI, load `OPENAI_API_KEY` privately into the local environment and use `--model openai/gpt-6-luna --inference-transport client-callback --allow-paid-openai`. Requests are billable. The adapter uses low reasoning, a maximum of six provider requests per run including bounded retries, an 80-second per-request timeout and a 4,096 output-token ceiling. It does not make provider calls during CI. A completed local 3-clean/3-faulted/3-reproduction campaign is recorded in `CODEX_RUN_LOG.md`; the adapter began retry deliberation before the fault reached the browser, so the evidence does not establish that response loss caused the initial retry decision.
 
 Keep these kinds of evidence distinct:
 
@@ -12,7 +14,7 @@ Keep these kinds of evidence distinct:
 - A campaign records actual outcomes and denominators. A safe refusal, failed task, missing trigger, incomplete observer, or invalid artifact is data, not a passing result. No detection-rate percentage is computed.
 - Native extension inference is labeled `native_google_extension`. The opt-in callback transport is labeled `stagehand_client_callback_google`; it is a Node.js Google REST call initiated by Stagehand's client-side LLM callback, not native Stagehand provider inference. Callback-observed Google usage/latency and Stagehand-reported `ActResult` metrics are stored in separate metadata fields and are validated separately.
 
-The frozen benchmark remains **0/36 not executed**, and detection rate remains **unmeasured**. The public Evidence Journal is unchanged. No real payment system is contacted.
+The 36-case reference-agent benchmark is separate from this adapter and is documented in [BENCHMARK.md](BENCHMARK.md); no model-backed benchmark was run. The public Evidence Journal is unchanged. No real payment system is contacted.
 
 ## Browser identity and fault isolation
 

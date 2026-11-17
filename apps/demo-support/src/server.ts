@@ -140,7 +140,7 @@ const supportDeskHtml = `<!doctype html>
           result.textContent = error instanceof Error ? error.message : 'Refund request failed.';
           result.dataset.kind = 'error';
         } finally {
-          button.disabled = readAfterWrite;
+          button.disabled = readAfterWrite && result.dataset.kind === 'success';
         }
       });
       refreshButton.addEventListener('click', () => void loadOrder());

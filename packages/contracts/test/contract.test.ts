@@ -58,10 +58,11 @@ const validFaultSchedules: Array<{ type: string; scenarioId: string; value: Reco
 ];
 
 describe("canonical strict fault schedule registry", () => {
-  it("validates all ten fault names and twelve supported app/scenario bindings", () => {
+  it("validates all ten fault names and 39 supported scenario/fault bindings", () => {
     expect(new Set(FAULT_SCHEDULE_REGISTRY.map(({ type }) => type)).size).toBe(10);
-    expect(FAULT_SCHEDULE_REGISTRY).toHaveLength(12);
-    expect(new Set(FAULT_SCHEDULE_REGISTRY.map(({ application, scenarioId }) => `${application}:${scenarioId}`)).size).toBe(12);
+    expect(FAULT_SCHEDULE_REGISTRY).toHaveLength(39);
+    expect(new Set(FAULT_SCHEDULE_REGISTRY.map(({ application, scenarioId, type }) => `${application}:${scenarioId}:${type}`)).size).toBe(39);
+    expect(new Set(FAULT_SCHEDULE_REGISTRY.map(({ application, scenarioId }) => `${application}:${scenarioId}`)).size).toBe(14);
     expect(FAULT_SCHEDULE_REGISTRY.find(({ scenarioId }) => scenarioId === "supportdesk-response-delay-v1")?.expectedPhase).toBe("after_upstream_commit");
     for (const schedule of validFaultSchedules) expect(validateFaultSchedule(schedule.value, { scenarioId: schedule.scenarioId, seed: "seed" }), schedule.type).toBe(true);
   });
@@ -83,14 +84,16 @@ describe("canonical strict fault schedule registry", () => {
 });
 
 describe("versioned workflow inventory", () => {
-  it("keeps 14 real scenarios separate from twelve unexecuted benchmark candidates", () => {
-    const path = fileURLToPath(new URL("../../../benchmarks/workflows.v1.json", import.meta.url));
-    const inventory = JSON.parse(readFileSync(path, "utf8")) as { inventoryVersion: string; benchmark: { targetVariants: number; targetCases: number; targetComposition: { clean: number; seeded: number }; executedCases: number; executionStatus: string; detectionRate: string }; implementedScenarios: Array<{ scenarioId: string; execution: string }>; candidateVariants: Array<{ application: string; caseReadiness: string; secondFaultPairing: { status: string; missing: string } }> };
-    expect(inventory.inventoryVersion).toBe("1.0.0"); expect(inventory.implementedScenarios).toHaveLength(14); expect(new Set(inventory.implementedScenarios.map(({ scenarioId }) => scenarioId)).size).toBe(14);
+  it("keeps 14 real scenarios and twelve frozen benchmark variants consistent with the frozen case manifest", () => {
+    const read = (name: string) => JSON.parse(readFileSync(fileURLToPath(new URL(`../../../benchmarks/${name}`, import.meta.url)), "utf8")) as Record<string, any>;
+    const inventory = read("workflows.v1.json"), manifest = read("cases.v1.json");
+    expect(inventory.inventoryVersion).toBe("1.0.0"); expect(inventory.implementedScenarios).toHaveLength(14); expect(new Set(inventory.implementedScenarios.map(({ scenarioId }: { scenarioId: string }) => scenarioId)).size).toBe(14);
     expect(inventory.candidateVariants).toHaveLength(12);
-    for (const app of ["supportdesk", "adminbench", "shopbench"]) expect(inventory.candidateVariants.filter((candidate) => candidate.application === app)).toHaveLength(4);
-    expect(inventory.candidateVariants.every((candidate) => candidate.caseReadiness === "planned_not_frozen" && candidate.secondFaultPairing.status === "blocked" && candidate.secondFaultPairing.missing.length > 0)).toBe(true);
-    expect(inventory.benchmark).toMatchObject({ targetVariants: 12, targetCases: 36, targetComposition: { clean: 12, seeded: 24 }, executedCases: 0, executionStatus: "NOT EXECUTED", detectionRate: "UNMEASURED" });
+    for (const app of ["supportdesk", "adminbench", "shopbench"]) expect(inventory.candidateVariants.filter((candidate: { application: string }) => candidate.application === app)).toHaveLength(4);
+    expect(inventory.candidateVariants.map((candidate: { candidateId: string }) => candidate.candidateId)).toEqual(manifest.variants.map((variant: { id: string }) => variant.id));
+    expect(manifest).toMatchObject({ status: "frozen", composition: { variants: 12, clean: 12, seeded: 24, total: 36 } });
+    expect(manifest.cases).toHaveLength(36);
+    expect(inventory.benchmark).toMatchObject({ targetVariants: 12, targetCases: 36, targetComposition: { clean: 12, seeded: 24 }, status: "frozen_and_executed", executedCases: 36 });
   });
 });
 

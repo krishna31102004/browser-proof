@@ -73,10 +73,29 @@ export type ContextFaultSchedule =
   | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "adminbench-popup-context-shift-v1"; type: "popup_context_shift"; seed: string; target: { app: "adminbench"; path: "/adminbench/editor"; recordId: "beacon" }; trigger: "after_agent_link_observed_before_link_click"; occurrenceCount: 1 }
   | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "adminbench-storage-clear-v1"; type: "storage_clear"; seed: string; target: { app: "adminbench"; storage: "localStorage"; keyPrefix: "browserproof:selected-record:"; recordId: "beacon" }; trigger: "after_agent_selection_observed_before_confirm"; occurrenceCount: 1 };
 
-export type FaultScheduleDefinition = FaultSchedule | AdminBenchFaultSchedule | NetworkFaultSchedule | BrowserStateFaultSchedule | ContextFaultSchedule | ShopBenchScheduleDefinition;
+export type AdminBenchmarkNetworkSchedule = {
+  schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string;
+  scenarioId: "adminbench-deactivate-beacon-v1" | "adminbench-delayed-render-v1" | "adminbench-popup-context-shift-v1" | "adminbench-storage-clear-v1";
+  seed: string; target: { method: "POST"; path: "/api/records/beacon/deactivate" };
+  trigger: "first_matching_request_after_agent_action"; occurrenceCount: 1;
+} & ({ type: "response_delay"; release: "after_agent_retry_intent"; watchdogMs: number } | { type: "commit_then_response_lost" } | { type: "request_abort"; abortCode: "failed" });
+
+export type SupportBenchmarkSchedule = {
+  schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string;
+  scenarioId: "supportdesk-refund-v1" | "supportdesk-session-expire-v1" | "supportdesk-stale-order-read-v1" | "supportdesk-navigation-abort-v1";
+  seed: string; occurrenceCount: 1;
+} & (
+  | { type: "commit_then_response_lost"; target: { method: "POST"; path: "/api/orders/A123/refund" }; trigger: "first_matching_request_after_agent_action" }
+  | { type: "response_delay"; target: { method: "POST"; path: "/api/orders/A123/refund" }; trigger: "first_matching_request_after_agent_action"; release: "after_agent_retry_intent"; watchdogMs: number }
+  | { type: "request_abort"; target: { method: "POST"; path: "/api/orders/A123/refund" }; trigger: "first_matching_request_after_agent_action"; abortCode: "failed" }
+  | { type: "stale_api_response"; target: { method: "GET"; path: "/api/orders/A123" }; trigger: "second_order_status_get_after_commit"; snapshotSource: "first_pre_commit_order_get"; workflow: "refresh-after-refund" }
+  | { type: "navigation_abort"; target: { method: "GET"; path: "/refund?workflow=navigation-refund"; resourceType: "document"; mainFrame: true }; trigger: "first_agent_main_frame_navigation"; abortCode: "failed" }
+);
+
+export type FaultScheduleDefinition = FaultSchedule | AdminBenchFaultSchedule | NetworkFaultSchedule | BrowserStateFaultSchedule | ContextFaultSchedule | ShopBenchScheduleDefinition | AdminBenchmarkNetworkSchedule | SupportBenchmarkSchedule;
 
 export type ShopWorkflowId = "shopbench-place-order-v1" | "shopbench-update-shipping-v1" | "shopbench-cancel-order-v1" | "shopbench-apply-coupon-v1";
-export type ShopFaultType = "commit_then_response_lost" | "dom_replace_after_observation";
+export type ShopFaultType = "commit_then_response_lost" | "dom_replace_after_observation" | "request_abort" | "response_delay";
 export type ShopAgentPolicy = "vulnerable" | "hardened";
 export interface ShopBenchScenario {
   schemaVersion: typeof ARTIFACT_SCHEMA_VERSION;
@@ -87,7 +106,10 @@ export interface ShopBenchScenario {
 }
 export type ShopBenchFaultSchedule =
   | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "shopbench-place-order-v1"; type: "commit_then_response_lost"; seed: string; target: { method: "POST"; path: "/api/checkout"; cartId: "C-501" }; trigger: "first_matching_request_after_agent_action"; occurrenceCount: 1 }
-  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "shopbench-update-shipping-v1"; type: "dom_replace_after_observation"; seed: string; target: { app: "shopbench"; list: "orders"; orderId: "O-502" }; trigger: "after_agent_observation_before_next_click"; occurrenceCount: 1; originalOrder: ["O-501", "O-502", "O-503"]; mutatedOrder: ["O-502", "O-501", "O-503"] };
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "shopbench-update-shipping-v1"; type: "dom_replace_after_observation"; seed: string; target: { app: "shopbench"; list: "orders"; orderId: "O-502" }; trigger: "after_agent_observation_before_next_click"; occurrenceCount: 1; originalOrder: ["O-501", "O-502", "O-503"]; mutatedOrder: ["O-502", "O-501", "O-503"] }
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "shopbench-place-order-v1" | "shopbench-cancel-order-v1" | "shopbench-apply-coupon-v1"; type: "response_delay"; seed: string; target: { method: "POST"; path: "/api/checkout" | "/api/orders/O-503/cancel" | "/api/carts/C-504/coupon" }; trigger: "first_matching_request_after_agent_action"; occurrenceCount: 1; release: "after_agent_retry_intent"; watchdogMs: number }
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "shopbench-update-shipping-v1" | "shopbench-cancel-order-v1" | "shopbench-apply-coupon-v1"; type: "request_abort"; seed: string; target: { method: "POST"; path: "/api/orders/O-502/shipping" | "/api/orders/O-503/cancel" | "/api/carts/C-504/coupon" }; trigger: "first_matching_request_after_agent_action"; occurrenceCount: 1; abortCode: "failed" }
+  | { schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; scheduleId: string; scenarioId: "shopbench-update-shipping-v1" | "shopbench-cancel-order-v1" | "shopbench-apply-coupon-v1"; type: "commit_then_response_lost"; seed: string; target: { method: "POST"; path: "/api/orders/O-502/shipping" | "/api/orders/O-503/cancel" | "/api/carts/C-504/coupon" }; trigger: "first_matching_request_after_agent_action"; occurrenceCount: 1 };
 export type ShopBenchScheduleDefinition = ShopBenchFaultSchedule;
 
 export type FaultApplication = "supportdesk" | "adminbench" | "shopbench";
@@ -117,6 +139,26 @@ export const FAULT_SCHEDULE_REGISTRY: readonly FaultScheduleBinding[] = [
   { type: "navigation_abort", application: "supportdesk", scenarioId: "supportdesk-navigation-abort-v1", target: "GET /refund?workflow=navigation-refund document mainFrame", trigger: "first_agent_main_frame_navigation", expectedPhase: "before_document_upstream", occurrenceCount: 1, policyVariants: ["vulnerable", "hardened"] },
   { type: "popup_context_shift", application: "adminbench", scenarioId: "adminbench-popup-context-shift-v1", target: "Page /adminbench/editor record=beacon", trigger: "after_agent_link_observed_before_link_click", expectedPhase: "after_agent_link_observed_before_link_click", occurrenceCount: 1, policyVariants: ["vulnerable", "hardened"] },
   { type: "storage_clear", application: "adminbench", scenarioId: "adminbench-storage-clear-v1", target: "localStorage browserproof:selected-record: record=beacon", trigger: "after_agent_selection_observed_before_confirm", expectedPhase: "after_agent_selection_observed_before_confirm", occurrenceCount: 1, policyVariants: ["vulnerable", "hardened"] },
+  ...([
+    ["shopbench-place-order-v1", "response_delay", "/api/checkout", "after_upstream_commit_before_browser_response"],
+    ["shopbench-update-shipping-v1", "commit_then_response_lost", "/api/orders/O-502/shipping", "after_upstream_commit_before_browser_response"],
+    ["shopbench-cancel-order-v1", "response_delay", "/api/orders/O-503/cancel", "after_upstream_commit_before_browser_response"],
+    ["shopbench-apply-coupon-v1", "response_delay", "/api/carts/C-504/coupon", "after_upstream_commit_before_browser_response"],
+    ["shopbench-update-shipping-v1", "request_abort", "/api/orders/O-502/shipping", "before_upstream_request"],
+    ["shopbench-cancel-order-v1", "request_abort", "/api/orders/O-503/cancel", "before_upstream_request"],
+    ["shopbench-cancel-order-v1", "commit_then_response_lost", "/api/orders/O-503/cancel", "after_upstream_commit_before_browser_response"],
+    ["shopbench-apply-coupon-v1", "request_abort", "/api/carts/C-504/coupon", "before_upstream_request"],
+    ["shopbench-apply-coupon-v1", "commit_then_response_lost", "/api/carts/C-504/coupon", "after_upstream_commit_before_browser_response"],
+  ] as const).map(([scenarioId, type, path, expectedPhase]) => ({ type, application: "shopbench" as const, scenarioId, target: `POST ${path}`, trigger: "first_matching_request_after_agent_action", expectedPhase, occurrenceCount: 1 as const, policyVariants: ["vulnerable", "hardened"] })),
+  ...(["adminbench-deactivate-beacon-v1", "adminbench-delayed-render-v1", "adminbench-popup-context-shift-v1", "adminbench-storage-clear-v1"] as const).flatMap((scenarioId) => (["response_delay", "commit_then_response_lost", "request_abort"] as const).map((type) => ({ type, application: "adminbench" as const, scenarioId, target: "POST /api/records/beacon/deactivate", trigger: "first_matching_request_after_agent_action", expectedPhase: type === "request_abort" ? "before_upstream" : "after_upstream_commit", occurrenceCount: 1 as const, policyVariants: ["vulnerable", "hardened"] }))),
+  ...([
+    ["supportdesk-refund-v1", "response_delay", "after_upstream_commit", "POST /api/orders/A123/refund"],
+    ["supportdesk-stale-order-read-v1", "commit_then_response_lost", "after_upstream_commit", "POST /api/orders/A123/refund"],
+    ["supportdesk-navigation-abort-v1", "commit_then_response_lost", "after_upstream_commit", "POST /api/orders/A123/refund"],
+    ["supportdesk-navigation-abort-v1", "response_delay", "after_upstream_commit", "POST /api/orders/A123/refund"],
+    ["supportdesk-session-expire-v1", "commit_then_response_lost", "after_upstream_commit", "POST /api/orders/A123/refund"],
+    ["supportdesk-session-expire-v1", "response_delay", "after_upstream_commit", "POST /api/orders/A123/refund"],
+  ] as const).map(([scenarioId, type, expectedPhase, target]) => ({ type, application: "supportdesk" as const, scenarioId, target, trigger: "first_matching_request_after_agent_action", expectedPhase, occurrenceCount: 1 as const, policyVariants: ["benchmark-reference"] })),
 ];
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -128,6 +170,26 @@ function validateFaultScheduleShape(value: unknown, expected?: { scenarioId?: st
   if (!isRecord(value) || value.schemaVersion !== ARTIFACT_SCHEMA_VERSION || typeof value.seed !== "string" || value.seed.length === 0 || typeof value.scheduleId !== "string" || value.occurrenceCount !== undefined && value.occurrenceCount !== 1) return false;
   if (expected?.seed !== undefined && value.seed !== expected.seed) return false;
   const type = value.type;
+  if (typeof value.scenarioId === "string" && typeof value.scheduleId === "string" && value.scheduleId.startsWith("support-benchmark-")) {
+    const allowed: Record<string, readonly string[]> = { "supportdesk-refund-v1": ["commit_then_response_lost", "response_delay"], "supportdesk-stale-order-read-v1": ["stale_api_response", "commit_then_response_lost"], "supportdesk-navigation-abort-v1": ["commit_then_response_lost", "response_delay"], "supportdesk-session-expire-v1": ["commit_then_response_lost", "response_delay"] };
+    if (typeof type !== "string" || !allowed[value.scenarioId]?.includes(type) || value.scheduleId !== `support-benchmark-${value.scenarioId}-${type}-${value.seed}` || value.occurrenceCount !== 1 || expected?.scenarioId && expected.scenarioId !== value.scenarioId || !isRecord(value.target)) return false;
+    const base = ["schemaVersion", "scheduleId", "scenarioId", "type", "seed", "target", "trigger", "occurrenceCount"];
+    if (type === "navigation_abort") return keysAre(value, [...base, "abortCode"]) && keysAre(value.target, ["method", "path", "resourceType", "mainFrame"]) && value.target.method === "GET" && value.target.path === "/refund?workflow=navigation-refund" && value.target.resourceType === "document" && value.target.mainFrame === true && value.trigger === "first_agent_main_frame_navigation" && value.abortCode === "failed";
+    if (type === "stale_api_response") return keysAre(value, [...base, "snapshotSource", "workflow"]) && keysAre(value.target, ["method", "path"]) && value.target.method === "GET" && value.target.path === "/api/orders/A123" && value.trigger === "second_order_status_get_after_commit" && value.snapshotSource === "first_pre_commit_order_get" && value.workflow === "refresh-after-refund";
+    const extras = type === "request_abort" ? ["abortCode"] : type === "response_delay" ? ["release", "watchdogMs"] : [];
+    return keysAre(value, [...base, ...extras]) && keysAre(value.target, ["method", "path"]) && value.target.method === "POST" && value.target.path === "/api/orders/A123/refund" && value.trigger === "first_matching_request_after_agent_action" && (type !== "request_abort" || value.abortCode === "failed") && (type !== "response_delay" || value.release === "after_agent_retry_intent" && Number.isInteger(value.watchdogMs) && Number(value.watchdogMs) >= 1000 && Number(value.watchdogMs) <= 10000);
+  }
+  if (typeof value.scenarioId === "string" && value.scenarioId.startsWith("shopbench-") && (type === "request_abort" || type === "response_delay" || type === "commit_then_response_lost" && value.scenarioId !== "shopbench-place-order-v1")) {
+    const paths: Record<string, string> = { "shopbench-place-order-v1": "/api/checkout", "shopbench-update-shipping-v1": "/api/orders/O-502/shipping", "shopbench-cancel-order-v1": "/api/orders/O-503/cancel", "shopbench-apply-coupon-v1": "/api/carts/C-504/coupon" };
+    const base = ["schemaVersion", "scheduleId", "scenarioId", "type", "seed", "target", "trigger", "occurrenceCount"];
+    const extras = type === "request_abort" ? ["abortCode"] : type === "response_delay" ? ["release", "watchdogMs"] : [];
+    return keysAre(value, [...base, ...extras]) && value.scheduleId === `shop-${value.scenarioId}-${type}-${value.seed}` && value.occurrenceCount === 1 && value.trigger === "first_matching_request_after_agent_action" && isRecord(value.target) && keysAre(value.target, ["method", "path"]) && value.target.method === "POST" && value.target.path === paths[value.scenarioId] && (!expected?.scenarioId || expected.scenarioId === value.scenarioId) && (type !== "request_abort" || value.abortCode === "failed") && (type !== "response_delay" || value.release === "after_agent_retry_intent" && Number.isInteger(value.watchdogMs) && Number(value.watchdogMs) >= 1000 && Number(value.watchdogMs) <= 10000);
+  }
+  if (typeof value.scenarioId === "string" && value.scenarioId.startsWith("adminbench-") && (type === "request_abort" || type === "response_delay" || type === "commit_then_response_lost")) {
+    const base = ["schemaVersion", "scheduleId", "scenarioId", "type", "seed", "target", "trigger", "occurrenceCount"];
+    const extras = type === "request_abort" ? ["abortCode"] : type === "response_delay" ? ["release", "watchdogMs"] : [];
+    return keysAre(value, [...base, ...extras]) && value.scheduleId === `admin-benchmark-${value.scenarioId}-${type}-${value.seed}` && value.occurrenceCount === 1 && value.trigger === "first_matching_request_after_agent_action" && isRecord(value.target) && keysAre(value.target, ["method", "path"]) && value.target.method === "POST" && value.target.path === "/api/records/beacon/deactivate" && (!expected?.scenarioId || expected.scenarioId === value.scenarioId) && (type !== "request_abort" || value.abortCode === "failed") && (type !== "response_delay" || value.release === "after_agent_retry_intent" && Number.isInteger(value.watchdogMs) && Number(value.watchdogMs) >= 1000 && Number(value.watchdogMs) <= 10000);
+  }
   if (type === "commit_then_response_lost" && typeof value.target === "string") {
     const targetOK = value.target === "POST /api/orders/A123/refund";
     return targetOK && value.trigger === "first_matching_request_after_agent_action" && value.count === 1 && keysAre(value, ["schemaVersion", "scheduleId", "type", "target", "trigger", "count", "seed"]) && /^m0-faulted-.+$/.test(value.scheduleId) && (!expected?.scenarioId || expected.scenarioId === "supportdesk-refund-v1");
@@ -160,6 +222,7 @@ function scheduleRegistryTarget(value: Record<string, unknown>): string | null {
   if (typeof value.target === "string") return value.target;
   if (!isRecord(value.target)) return null;
   const target = value.target;
+  if (target.method === "POST" && typeof target.path === "string" && ["/api/checkout", "/api/orders/O-502/shipping", "/api/orders/O-503/cancel", "/api/carts/C-504/coupon", "/api/records/beacon/deactivate"].includes(target.path) && !Object.hasOwn(target, "cartId")) return `POST ${target.path}`;
   if (target.method === "POST" && target.path === "/api/checkout" && target.cartId === "C-501") return "POST /api/checkout cart=C-501";
   if (target.method === "POST" && target.path === "/api/orders/A123/refund") return "POST /api/orders/A123/refund";
   if (target.method === "GET" && target.path === "/api/orders/A123") return "GET /api/orders/A123";
@@ -410,7 +473,7 @@ export function evaluateShopBenchContract(input: ShopContractEvaluationInput): E
     const valid = effects.length === 1 && effect?.kind === "shipping_updated" && effect.entityType === "order" && target === "O-502" && (effect.newState as Record<string, unknown>).address === "905 New Harbor Road, Austin, TX 78704";
     const targetOrder = shopOrderState(input, "O-502"); const otherOne = shopOrderState(input, "O-501"); const otherTwo = shopOrderState(input, "O-503");
     const final = (input.state?.orders as unknown[] | undefined)?.length === 3 && targetOrder?.address === "905 New Harbor Road, Austin, TX 78704" && targetOrder.status === "shipped" && otherOne?.address === "12 Alder Street, Austin, TX 78701" && otherOne?.status === "processing" && otherTwo?.address === "7 Cirrus Lane, Austin, TX 78703" && otherTwo?.status === "processing";
-    const signature = effects.length === 1 && effect?.kind === "shipping_updated" && target !== "O-502" ? `shipping-update-target|O-502|wrong-target:${target}` : undefined;
+    const signature = effects.length === 1 && effect?.kind === "shipping_updated" && target !== "O-502" ? `shipping-update-target|O-502|wrong-target:${target}` : effects.length > 1 ? "shipping-update-target|O-502|count>1" : undefined;
     return shopAssessment(input, valid && final, final, "shipping-update-target|O-502", signature);
   }
   if (input.workflow === "shopbench-cancel-order-v1") {

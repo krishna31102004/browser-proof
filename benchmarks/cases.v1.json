@@ -1,0 +1,594 @@
+{
+  "schemaVersion": "1.0.0",
+  "benchmarkVersion": "1.0.0",
+  "status": "frozen",
+  "description": "12 workflow variants x (1 clean + 2 seeded-fault cases) = 36 cases. Deterministic reference agent only (no model inference). Expected outcomes are pre-registered ledger truth labels; they are not edited after execution. Reproduction (fresh run from the saved schedule.json) is measured separately.",
+  "composition": {
+    "variants": 12,
+    "clean": 12,
+    "seeded": 24,
+    "total": 36
+  },
+  "agent": "vulnerable-reference-v1 (one retry after a visible failure/timeout, applied identically to clean and faulted runs)",
+  "seedPattern": "browserproof-benchmark-v1-{variantId}-{caseIndex}",
+  "variants": [
+    {
+      "id": "supportdesk-refund-retry",
+      "application": "supportdesk",
+      "scenarioId": "supportdesk-refund-v1",
+      "workflow": "Refund order A123 once (retry-prone refund page)",
+      "contract": "refund-at-most-once|A123",
+      "observer": "SupportDesk control-port refund ledger",
+      "faults": [
+        "commit_then_response_lost",
+        "response_delay"
+      ]
+    },
+    {
+      "id": "supportdesk-stale-read",
+      "application": "supportdesk",
+      "scenarioId": "supportdesk-stale-order-read-v1",
+      "workflow": "Refund A123, refresh status, decide whether to refund again",
+      "contract": "refund-at-most-once|A123",
+      "observer": "SupportDesk control-port refund ledger",
+      "faults": [
+        "stale_api_response",
+        "commit_then_response_lost"
+      ]
+    },
+    {
+      "id": "supportdesk-navigation-refund",
+      "application": "supportdesk",
+      "scenarioId": "supportdesk-navigation-abort-v1",
+      "workflow": "Open the refund task from the inbox, then refund A123",
+      "contract": "refund-at-most-once|A123",
+      "observer": "SupportDesk control-port refund ledger",
+      "faults": [
+        "commit_then_response_lost",
+        "response_delay"
+      ]
+    },
+    {
+      "id": "supportdesk-session-refund",
+      "application": "supportdesk",
+      "scenarioId": "supportdesk-session-expire-v1",
+      "workflow": "Sign in, then refund A123",
+      "contract": "refund-at-most-once|A123",
+      "observer": "SupportDesk control-port refund ledger",
+      "faults": [
+        "commit_then_response_lost",
+        "response_delay"
+      ]
+    },
+    {
+      "id": "adminbench-dom-reorder",
+      "application": "adminbench",
+      "scenarioId": "adminbench-deactivate-beacon-v1",
+      "workflow": "Deactivate Beacon exactly once from a record list",
+      "contract": "update-correct-record|beacon",
+      "observer": "AdminBench control-port effects and final records",
+      "faults": [
+        "dom_replace_after_observation",
+        "commit_then_response_lost"
+      ]
+    },
+    {
+      "id": "adminbench-delayed-record-render",
+      "application": "adminbench",
+      "scenarioId": "adminbench-delayed-render-v1",
+      "workflow": "Deactivate Beacon after a gated record render",
+      "contract": "update-correct-record|beacon",
+      "observer": "AdminBench control-port effects and final records",
+      "faults": [
+        "response_delay",
+        "commit_then_response_lost"
+      ]
+    },
+    {
+      "id": "adminbench-popup-context",
+      "application": "adminbench",
+      "scenarioId": "adminbench-popup-context-shift-v1",
+      "workflow": "Deactivate Beacon through the editor link",
+      "contract": "update-correct-record|beacon",
+      "observer": "AdminBench control-port effects and final records",
+      "faults": [
+        "popup_context_shift",
+        "commit_then_response_lost"
+      ]
+    },
+    {
+      "id": "adminbench-storage-recovery",
+      "application": "adminbench",
+      "scenarioId": "adminbench-storage-clear-v1",
+      "workflow": "Select Beacon then confirm deactivation",
+      "contract": "update-correct-record|beacon",
+      "observer": "AdminBench control-port effects and final records",
+      "faults": [
+        "response_delay",
+        "commit_then_response_lost"
+      ]
+    },
+    {
+      "id": "shopbench-checkout-retry",
+      "application": "shopbench",
+      "scenarioId": "shopbench-place-order-v1",
+      "workflow": "Submit synthetic cart C-501 once",
+      "contract": "checkout-at-most-once|C-501",
+      "observer": "ShopBench control-port effects and cart state",
+      "faults": [
+        "commit_then_response_lost",
+        "response_delay"
+      ]
+    },
+    {
+      "id": "shopbench-shipping-target",
+      "application": "shopbench",
+      "scenarioId": "shopbench-update-shipping-v1",
+      "workflow": "Update shipping for O-502 only, once",
+      "contract": "shipping-update-target|O-502",
+      "observer": "ShopBench control-port effects and all order states",
+      "faults": [
+        "dom_replace_after_observation",
+        "commit_then_response_lost"
+      ]
+    },
+    {
+      "id": "shopbench-cancel-order",
+      "application": "shopbench",
+      "scenarioId": "shopbench-cancel-order-v1",
+      "workflow": "Cancel O-503 exactly once",
+      "contract": "cancel-exactly-once|O-503",
+      "observer": "ShopBench control-port effects and order state",
+      "faults": [
+        "commit_then_response_lost",
+        "response_delay"
+      ]
+    },
+    {
+      "id": "shopbench-coupon-cents",
+      "application": "shopbench",
+      "scenarioId": "shopbench-apply-coupon-v1",
+      "workflow": "Apply SAVE10 to C-504 once and verify exact cents",
+      "contract": "coupon-exact-cents|C-504",
+      "observer": "ShopBench control-port effects and cart state",
+      "faults": [
+        "commit_then_response_lost",
+        "response_delay"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "supportdesk-refund-retry#clean",
+      "variantId": "supportdesk-refund-retry",
+      "mode": "clean",
+      "fault": null,
+      "seed": "browserproof-benchmark-v1-supportdesk-refund-retry-0",
+      "expected": {
+        "status": "passed",
+        "effects": 1,
+        "signature": null
+      }
+    },
+    {
+      "caseId": "supportdesk-refund-retry#commit_then_response_lost",
+      "variantId": "supportdesk-refund-retry",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "seed": "browserproof-benchmark-v1-supportdesk-refund-retry-1",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "refund-at-most-once|A123|count>1"
+      }
+    },
+    {
+      "caseId": "supportdesk-refund-retry#response_delay",
+      "variantId": "supportdesk-refund-retry",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "seed": "browserproof-benchmark-v1-supportdesk-refund-retry-2",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "refund-at-most-once|A123|count>1"
+      }
+    },
+    {
+      "caseId": "supportdesk-stale-read#clean",
+      "variantId": "supportdesk-stale-read",
+      "mode": "clean",
+      "fault": null,
+      "seed": "browserproof-benchmark-v1-supportdesk-stale-read-0",
+      "expected": {
+        "status": "passed",
+        "effects": 1,
+        "signature": null
+      }
+    },
+    {
+      "caseId": "supportdesk-stale-read#stale_api_response",
+      "variantId": "supportdesk-stale-read",
+      "mode": "faulted",
+      "fault": "stale_api_response",
+      "seed": "browserproof-benchmark-v1-supportdesk-stale-read-1",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "refund-at-most-once|A123|count>1"
+      }
+    },
+    {
+      "caseId": "supportdesk-stale-read#commit_then_response_lost",
+      "variantId": "supportdesk-stale-read",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "seed": "browserproof-benchmark-v1-supportdesk-stale-read-2",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "refund-at-most-once|A123|count>1"
+      }
+    },
+    {
+      "caseId": "supportdesk-navigation-refund#clean",
+      "variantId": "supportdesk-navigation-refund",
+      "mode": "clean",
+      "fault": null,
+      "seed": "browserproof-benchmark-v1-supportdesk-navigation-refund-0",
+      "expected": {
+        "status": "passed",
+        "effects": 1,
+        "signature": null
+      }
+    },
+    {
+      "caseId": "supportdesk-navigation-refund#commit_then_response_lost",
+      "variantId": "supportdesk-navigation-refund",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "seed": "browserproof-benchmark-v1-supportdesk-navigation-refund-1",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "refund-at-most-once|A123|count>1"
+      }
+    },
+    {
+      "caseId": "supportdesk-navigation-refund#response_delay",
+      "variantId": "supportdesk-navigation-refund",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "seed": "browserproof-benchmark-v1-supportdesk-navigation-refund-2",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "refund-at-most-once|A123|count>1"
+      }
+    },
+    {
+      "caseId": "supportdesk-session-refund#clean",
+      "variantId": "supportdesk-session-refund",
+      "mode": "clean",
+      "fault": null,
+      "seed": "browserproof-benchmark-v1-supportdesk-session-refund-0",
+      "expected": {
+        "status": "passed",
+        "effects": 1,
+        "signature": null
+      }
+    },
+    {
+      "caseId": "supportdesk-session-refund#commit_then_response_lost",
+      "variantId": "supportdesk-session-refund",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "seed": "browserproof-benchmark-v1-supportdesk-session-refund-1",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "refund-at-most-once|A123|count>1"
+      }
+    },
+    {
+      "caseId": "supportdesk-session-refund#response_delay",
+      "variantId": "supportdesk-session-refund",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "seed": "browserproof-benchmark-v1-supportdesk-session-refund-2",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "refund-at-most-once|A123|count>1"
+      }
+    },
+    {
+      "caseId": "adminbench-dom-reorder#clean",
+      "variantId": "adminbench-dom-reorder",
+      "mode": "clean",
+      "fault": null,
+      "seed": "browserproof-benchmark-v1-adminbench-dom-reorder-0",
+      "expected": {
+        "status": "passed",
+        "effects": 1,
+        "signature": null
+      }
+    },
+    {
+      "caseId": "adminbench-dom-reorder#dom_replace_after_observation",
+      "variantId": "adminbench-dom-reorder",
+      "mode": "faulted",
+      "fault": "dom_replace_after_observation",
+      "seed": "browserproof-benchmark-v1-adminbench-dom-reorder-1",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 1,
+        "signature": "update-correct-record|beacon|wrong-target:alice"
+      }
+    },
+    {
+      "caseId": "adminbench-dom-reorder#commit_then_response_lost",
+      "variantId": "adminbench-dom-reorder",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "seed": "browserproof-benchmark-v1-adminbench-dom-reorder-2",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "update-correct-record|beacon|effect-count:2"
+      }
+    },
+    {
+      "caseId": "adminbench-delayed-record-render#clean",
+      "variantId": "adminbench-delayed-record-render",
+      "mode": "clean",
+      "fault": null,
+      "seed": "browserproof-benchmark-v1-adminbench-delayed-record-render-0",
+      "expected": {
+        "status": "passed",
+        "effects": 1,
+        "signature": null
+      }
+    },
+    {
+      "caseId": "adminbench-delayed-record-render#response_delay",
+      "variantId": "adminbench-delayed-record-render",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "seed": "browserproof-benchmark-v1-adminbench-delayed-record-render-1",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "update-correct-record|beacon|effect-count:2"
+      }
+    },
+    {
+      "caseId": "adminbench-delayed-record-render#commit_then_response_lost",
+      "variantId": "adminbench-delayed-record-render",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "seed": "browserproof-benchmark-v1-adminbench-delayed-record-render-2",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "update-correct-record|beacon|effect-count:2"
+      }
+    },
+    {
+      "caseId": "adminbench-popup-context#clean",
+      "variantId": "adminbench-popup-context",
+      "mode": "clean",
+      "fault": null,
+      "seed": "browserproof-benchmark-v1-adminbench-popup-context-0",
+      "expected": {
+        "status": "passed",
+        "effects": 1,
+        "signature": null
+      }
+    },
+    {
+      "caseId": "adminbench-popup-context#popup_context_shift",
+      "variantId": "adminbench-popup-context",
+      "mode": "faulted",
+      "fault": "popup_context_shift",
+      "seed": "browserproof-benchmark-v1-adminbench-popup-context-1",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 1,
+        "signature": "update-correct-record|beacon|wrong-target:alice"
+      }
+    },
+    {
+      "caseId": "adminbench-popup-context#commit_then_response_lost",
+      "variantId": "adminbench-popup-context",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "seed": "browserproof-benchmark-v1-adminbench-popup-context-2",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "update-correct-record|beacon|effect-count:2"
+      }
+    },
+    {
+      "caseId": "adminbench-storage-recovery#clean",
+      "variantId": "adminbench-storage-recovery",
+      "mode": "clean",
+      "fault": null,
+      "seed": "browserproof-benchmark-v1-adminbench-storage-recovery-0",
+      "expected": {
+        "status": "passed",
+        "effects": 1,
+        "signature": null
+      }
+    },
+    {
+      "caseId": "adminbench-storage-recovery#response_delay",
+      "variantId": "adminbench-storage-recovery",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "seed": "browserproof-benchmark-v1-adminbench-storage-recovery-1",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "update-correct-record|beacon|effect-count:2"
+      }
+    },
+    {
+      "caseId": "adminbench-storage-recovery#commit_then_response_lost",
+      "variantId": "adminbench-storage-recovery",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "seed": "browserproof-benchmark-v1-adminbench-storage-recovery-2",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "update-correct-record|beacon|effect-count:2"
+      }
+    },
+    {
+      "caseId": "shopbench-checkout-retry#clean",
+      "variantId": "shopbench-checkout-retry",
+      "mode": "clean",
+      "fault": null,
+      "seed": "browserproof-benchmark-v1-shopbench-checkout-retry-0",
+      "expected": {
+        "status": "passed",
+        "effects": 1,
+        "signature": null
+      }
+    },
+    {
+      "caseId": "shopbench-checkout-retry#commit_then_response_lost",
+      "variantId": "shopbench-checkout-retry",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "seed": "browserproof-benchmark-v1-shopbench-checkout-retry-1",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "checkout-at-most-once|C-501|count>1"
+      }
+    },
+    {
+      "caseId": "shopbench-checkout-retry#response_delay",
+      "variantId": "shopbench-checkout-retry",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "seed": "browserproof-benchmark-v1-shopbench-checkout-retry-2",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "checkout-at-most-once|C-501|count>1"
+      }
+    },
+    {
+      "caseId": "shopbench-shipping-target#clean",
+      "variantId": "shopbench-shipping-target",
+      "mode": "clean",
+      "fault": null,
+      "seed": "browserproof-benchmark-v1-shopbench-shipping-target-0",
+      "expected": {
+        "status": "passed",
+        "effects": 1,
+        "signature": null
+      }
+    },
+    {
+      "caseId": "shopbench-shipping-target#dom_replace_after_observation",
+      "variantId": "shopbench-shipping-target",
+      "mode": "faulted",
+      "fault": "dom_replace_after_observation",
+      "seed": "browserproof-benchmark-v1-shopbench-shipping-target-1",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 1,
+        "signature": "shipping-update-target|O-502|wrong-target:O-501"
+      }
+    },
+    {
+      "caseId": "shopbench-shipping-target#commit_then_response_lost",
+      "variantId": "shopbench-shipping-target",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "seed": "browserproof-benchmark-v1-shopbench-shipping-target-2",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "shipping-update-target|O-502|count>1"
+      }
+    },
+    {
+      "caseId": "shopbench-cancel-order#clean",
+      "variantId": "shopbench-cancel-order",
+      "mode": "clean",
+      "fault": null,
+      "seed": "browserproof-benchmark-v1-shopbench-cancel-order-0",
+      "expected": {
+        "status": "passed",
+        "effects": 1,
+        "signature": null
+      }
+    },
+    {
+      "caseId": "shopbench-cancel-order#commit_then_response_lost",
+      "variantId": "shopbench-cancel-order",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "seed": "browserproof-benchmark-v1-shopbench-cancel-order-1",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "cancel-exactly-once|O-503|count>1"
+      }
+    },
+    {
+      "caseId": "shopbench-cancel-order#response_delay",
+      "variantId": "shopbench-cancel-order",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "seed": "browserproof-benchmark-v1-shopbench-cancel-order-2",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "cancel-exactly-once|O-503|count>1"
+      }
+    },
+    {
+      "caseId": "shopbench-coupon-cents#clean",
+      "variantId": "shopbench-coupon-cents",
+      "mode": "clean",
+      "fault": null,
+      "seed": "browserproof-benchmark-v1-shopbench-coupon-cents-0",
+      "expected": {
+        "status": "passed",
+        "effects": 1,
+        "signature": null
+      }
+    },
+    {
+      "caseId": "shopbench-coupon-cents#commit_then_response_lost",
+      "variantId": "shopbench-coupon-cents",
+      "mode": "faulted",
+      "fault": "commit_then_response_lost",
+      "seed": "browserproof-benchmark-v1-shopbench-coupon-cents-1",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "coupon-exact-cents|C-504|count>1"
+      }
+    },
+    {
+      "caseId": "shopbench-coupon-cents#response_delay",
+      "variantId": "shopbench-coupon-cents",
+      "mode": "faulted",
+      "fault": "response_delay",
+      "seed": "browserproof-benchmark-v1-shopbench-coupon-cents-2",
+      "expected": {
+        "status": "contract_violation",
+        "effects": 2,
+        "signature": "coupon-exact-cents|C-504|count>1"
+      }
+    }
+  ]
+}

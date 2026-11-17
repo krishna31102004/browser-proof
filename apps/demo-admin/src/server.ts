@@ -152,8 +152,9 @@ const adminBenchHtml = `<!doctype html>
             const editButton = document.querySelector('#beacon-editor-action');
             editButton.disabled = beacon.status === 'inactive';
             editButton.addEventListener('click', async () => {
-              await deactivateRecord('beacon');
               editButton.disabled = true;
+              await deactivateRecord('beacon');
+              if (result.dataset.kind === 'error') editButton.disabled = false;
             });
             return;
           }
@@ -179,8 +180,9 @@ const adminBenchHtml = `<!doctype html>
                 refreshSelectionState();
                 return;
               }
-              await deactivateRecord(selectedRecordId);
               confirm.disabled = true;
+              await deactivateRecord(selectedRecordId);
+              if (result.dataset.kind === 'error') confirm.disabled = false;
             });
             window.addEventListener('storage', refreshSelectionState);
             refreshSelectionState();
@@ -234,7 +236,8 @@ const adminBenchHtml = `<!doctype html>
           const update = await fetch('/api/records/' + encodeURIComponent(selectedRecordId) + '/deactivate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-BrowserProof-Run-Id': runId, 'X-BrowserProof-Action-Id': actionId, 'X-BrowserProof-Request-Id': requestId, 'X-BrowserProof-Observation-Id': observationId },
-            body: JSON.stringify({ runId })
+            body: JSON.stringify({ runId }),
+            signal: AbortSignal.timeout(1500)
           });
           const payload = await update.json();
           if (!update.ok || payload.success !== true) throw new Error(payload.error || 'Update failed.');

@@ -15,6 +15,7 @@ import { BROWSER_STATE_TYPES, browserStateSignature, createBrowserStateSchedule,
 import { contextFaultReproductionIdsAreFresh, createContextFaultSchedule, executeContextFaultRun, normalizedContextFaultSignature, validateContextFaultArtifacts, validateContextFaultSchedule, type ContextAgentPolicy, type ContextFaultResult, type ContextFaultType, type ContextFaultSchedule } from "./context-fault-run.js";
 import { createShopSchedule, executeShopRun, shopSignature, validateShopArtifacts, validateShopSchedule, type ShopRunResult } from "./shop-run.js";
 import { validateRunArtifacts } from "./run-artifact-validation.js";
+import { runBenchmark, validateBenchmarkReport, writeBenchmarkReport, type BenchmarkReport } from "./benchmark.js";
 import type { ShopAgentPolicy, ShopBenchFaultSchedule, ShopWorkflowId } from "@browserproof/contracts";
 import { APPROVED_GEMINI_STAGEHAND_MODELS, STAGEHAND_SDK_VERSION, validateStagehandSpendConfiguration, type ApprovedGeminiStagehandModel } from "./stagehand-adapter.js";
 import { executeStagehandRun, executeStagehandSameBrowserSmoke, stagehandPreflight, type StagehandRunSummary } from "./stagehand-run.js";
@@ -977,6 +978,31 @@ async function exportDemo(): Promise<number> {
   return 0;
 }
 
+async function benchmarkCommand(): Promise<number> {
+  const sub = process.argv[3];
+  if (sub === "run") {
+    const only = argument("--only")?.split(",").filter(Boolean);
+    let dirtyAtStart: boolean | null = null;
+    try { dirtyAtStart = execFileSync("git", ["status", "--porcelain", "--", ".", ":!artifacts", ":!benchmarks/results.v1.json"], { encoding: "utf8" }).trim().length > 0; } catch { /* not a repository */ }
+    const report = await runBenchmark({ ...(only ? { only } : {}), reproduce: !process.argv.includes("--no-repro"), onProgress: (row) => console.error(`${row.caseId}: ${row.classification}${row.reproduction ? ` repro=${row.reproduction.matched}` : ""}`) });
+    try { report.gitCommit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(); report.workingTreeDirty = dirtyAtStart; } catch { /* not a repository */ }
+    const full = !only?.length;
+    const targets = [resolve("artifacts", `benchmark-v1-${report.reportId}.json`), ...(full ? [resolve("benchmarks", "results.v1.json")] : [])];
+    await writeBenchmarkReport(report, targets);
+    const audit = await validateBenchmarkReport(report, { auditArtifacts: true, partial: !full });
+    console.log(JSON.stringify({ benchmark: audit.valid && full ? "COMPLETE" : audit.valid ? "PARTIAL_SELECTION" : "REPORT_INVALID", reportValid: audit.valid, reportErrors: audit.errors, reports: targets, metrics: report.metrics }, null, 2));
+    return audit.valid ? 0 : 1;
+  }
+  if (sub === "verify") {
+    const path = argument("--report") ?? resolve("benchmarks", "results.v1.json");
+    const report = JSON.parse(await readFile(path, "utf8")) as BenchmarkReport;
+    const audit = await validateBenchmarkReport(report, { auditArtifacts: process.argv.includes("--audit-artifacts") });
+    console.log(JSON.stringify({ report: path, valid: audit.valid, errors: audit.errors, metrics: report.metrics }, null, 2));
+    return audit.valid ? 0 : 1;
+  }
+  throw new Error("Usage: pnpm bp benchmark <run [--only id,id] [--no-repro]|verify [--report path] [--audit-artifacts]>");
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2];
   const scenario = argument("--scenario");
@@ -984,6 +1010,7 @@ async function main(): Promise<void> {
   if (command === "run") code = await runOnce();
   else if (command === "repro") code = await reproduce();
   else if (command === "verify") code = scenario === "stagehand-smoke" ? await verifyStagehandCampaign() : scenario === "shopbench" ? await verifyShopBench() : scenario === "adminbench" ? await verifyAdminBench() : scenario === "network-faults" ? await verifyNetworkFaults() : scenario === "browser-faults" ? await verifyBrowserFaults() : scenario === "context-faults" ? await verifyContextFaults() : await verify();
+  else if (command === "benchmark") code = await benchmarkCommand();
   else if (command === "stagehand") code = await stagehandCommand();
   else if (command === "regression") code = await runRegression();
   else if (command === "export-demo") code = await exportDemo();

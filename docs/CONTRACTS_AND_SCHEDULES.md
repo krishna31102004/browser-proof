@@ -38,11 +38,11 @@ The `FAULT_SCHEDULE_REGISTRY` and `validateFaultSchedule()` API cover all ten fa
 
 The runtime registry is exercised by table-driven valid/invalid schedule tests. Cross-app substitutions, unexpected keys, forged IDs, wrong seeds, incorrect counts, targets, and scenarios are rejected. Saved-schedule reproduction remains performed by the existing `pnpm bp repro artifacts/<ACTUAL_FAULTED_RUN_ID> --times 3` command and each campaign’s fresh-context verification.
 
-## Candidate benchmark inventory
+## Benchmark inventory
 
-[`benchmarks/workflows.v1.json`](../benchmarks/workflows.v1.json) records fourteen actually implemented scenario IDs and proposes four candidates per app. It keeps executable scenario status separate from candidate readiness. Each candidate needs twelve total benchmark variants and thirty-six cases (twelve clean plus twenty-four seeded) eventually; the inventory does not freeze those cases. Where a scenario has one registered fault schedule, the required second pairing is explicitly blocked because there is no second legal target/trigger/effect validator bound to that scenario ID. ShopBench cancellation and coupon remain real clean baselines, with no fault schedule. Pairing a different scenario’s schedule to make the matrix look complete would be invalid.
+[`benchmarks/workflows.v1.json`](../benchmarks/workflows.v1.json) lists the implemented scenario IDs and the twelve benchmark variants. The 36 cases are frozen in [`benchmarks/cases.v1.json`](../benchmarks/cases.v1.json) (12 clean + 24 seeded; pre-registered expected status, effect count and signature per case) and measured in [`benchmarks/results.v1.json`](../benchmarks/results.v1.json). Methodology, results and limitations: [docs/BENCHMARK.md](BENCHMARK.md). The strict registry now holds 39 scenario/fault bindings; benchmark schedules use scenario-unique IDs (`admin-benchmark-<scenario>-<type>-<seed>`, `support-benchmark-...`, `shop-<scenario>-<type>-<seed>`).
 
-**Current measured benchmark:** **0/36 NOT EXECUTED**. Detection rate: **UNMEASURED**. No benchmarks are run by Prompt 11.
+**Current measured benchmark:** 36/36 cases executed; 24/24 valid seeded failures detected (coverage 24/24), 0 false positives, 24/24 fresh reproductions, for the deterministic vulnerable reference agent. This validates the harness, not real-agent failure rates.
 
 ## Sample normalized results
 

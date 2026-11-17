@@ -111,6 +111,24 @@ describe("ShopBench isolated controlled storefront", () => {
     await context.close();
   });
 
+  it("allows cancellation and coupon state to be recovered through the UI after a committed response is lost", async () => {
+    for (const row of [
+      { runId: "cancel-ui-recovery", workflow: "shopbench-cancel-order-v1", path: "/api/orders/O-503/cancel", action: "cancel-order", verify: "verify-cancel", display: "order-status", expected: "cancelled", kind: "order_cancelled" },
+      { runId: "coupon-ui-recovery", workflow: "shopbench-apply-coupon-v1", path: "/api/carts/C-504/coupon", action: "apply-coupon", verify: "verify-coupon", display: "total", expected: "$90.00", kind: "coupon_applied" },
+    ]) {
+      await reset(row.runId); const { context, page } = await openWorkflow(row.runId, row.workflow);
+      await page.getByTestId(row.action).waitFor({ state: "visible" });
+      await page.route(`**${row.path}`, async (route) => { const upstream = await route.fetch(); assert.equal(upstream.status(), 200); await route.abort("failed"); });
+      await correlate(page, `${row.runId}-observation`, `${row.runId}-action`, `${row.runId}-request`);
+      const failed = page.waitForEvent("requestfailed", (request) => request.method() === "POST" && request.url().endsWith(row.path));
+      await page.getByTestId(row.action).click(); await failed;
+      await page.getByTestId(row.verify).click();
+      await page.getByTestId(row.display).filter({ hasText: row.expected }).waitFor({ state: "visible", timeout: 3000 });
+      const ledger = await effects(row.runId); assert.equal(ledger.length, 1); assert.equal(ledger[0]?.kind, row.kind); assert.equal(ledger[0]?.requestId, `${row.runId}-request`);
+      await context.close();
+    }
+  });
+
   it("isolates reset state and keeps duplicate IDs scoped to their run", async () => {
     const runA = "shop-isolation-a", runB = "shop-isolation-b"; await reset(runA); await reset(runB);
     const commitA = await sendWrite("/api/checkout", runA, { cartId: "C-501" }, "shared-request"); assert.equal(commitA.status, 200);

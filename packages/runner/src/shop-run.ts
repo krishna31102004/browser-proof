@@ -9,7 +9,7 @@ import { startShopBench, type ShopBenchServer } from "@browserproof/demo-shop";
 import { EventWriter } from "./event-writer.js";
 import { validatePlaywrightTraceArchive } from "./trace-archive.js";
 
-export type ShopFaultType = ShopBenchFaultSchedule["type"];
+export type ShopFaultType = ShopBenchFaultSchedule["type"] | "request_abort" | "response_delay";
 export interface ShopRunResult {
   schemaVersion: typeof ARTIFACT_SCHEMA_VERSION; runId: string; scenarioId: ShopWorkflowId; workflow: ShopWorkflowId;
   mode: RunMode; agentPolicy: ShopAgentPolicy; seed: string; status: "passed" | "contract_violation" | "agent_error" | "browser_error" | "injection_error" | "observer_inconclusive";
@@ -19,7 +19,7 @@ export interface ShopRunResult {
   contract: { name: string; passed: boolean; signature?: string };
   error?: string;
 }
-export interface ShopRunOptions { workflow: ShopWorkflowId; mode: RunMode; agent: ShopAgentPolicy; seed: string; schedule?: ShopBenchFaultSchedule; runId?: string; artifactRoot?: string; suppressTriggerForTest?: boolean; observerUrlOverride?: string }
+export interface ShopRunOptions { workflow: ShopWorkflowId; mode: RunMode; agent: ShopAgentPolicy; seed: string; fault?: ShopFaultType; schedule?: ShopBenchFaultSchedule; runId?: string; artifactRoot?: string; suppressTriggerForTest?: boolean; observerUrlOverride?: string }
 export interface ShopRun { result: ShopRunResult; artifactDir: string }
 
 const workflowFault: Partial<Record<ShopWorkflowId, ShopFaultType>> = {
@@ -37,7 +37,14 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 const writeJson = (path: string, value: unknown) => writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 async function call<T>(url: string, init?: RequestInit): Promise<T> { const response = await fetch(url, { ...init, signal: AbortSignal.timeout(2500) }); if (!response.ok) throw new Error(`ShopBench request ${url} returned HTTP ${response.status}`); return await response.json() as T; }
 
-export function createShopSchedule(workflow: ShopWorkflowId, seed: string): ShopBenchFaultSchedule {
+export function createShopSchedule(workflow: ShopWorkflowId, seed: string, fault?: ShopFaultType): ShopBenchFaultSchedule {
+  const targets: Partial<Record<ShopWorkflowId, string>> = { "shopbench-place-order-v1": "/api/checkout", "shopbench-update-shipping-v1": "/api/orders/O-502/shipping", "shopbench-cancel-order-v1": "/api/orders/O-503/cancel", "shopbench-apply-coupon-v1": "/api/carts/C-504/coupon" };
+  const isNew = isAdditionalFault(workflow, fault ?? null);
+  if (isNew) {
+    const base = { schemaVersion: ARTIFACT_SCHEMA_VERSION, scheduleId: `shop-${workflow}-${fault}-${seed}`, scenarioId: workflow, type: fault, seed, target: { method: "POST", path: targets[workflow] }, trigger: "first_matching_request_after_agent_action", occurrenceCount: 1 };
+    return { ...base, ...(fault === "request_abort" ? { abortCode: "failed" } : fault === "response_delay" ? { release: "after_agent_retry_intent", watchdogMs: 5000 } : {}) } as unknown as ShopBenchFaultSchedule;
+  }
+  if (fault && fault !== workflowFault[workflow]) throw new Error(`Unsupported fault ${fault} for ${workflow}`);
   if (workflow === "shopbench-place-order-v1") return { schemaVersion: ARTIFACT_SCHEMA_VERSION, scheduleId: `shop-${workflow}-${seed}`, scenarioId: workflow, type: "commit_then_response_lost", seed, target: { method: "POST", path: "/api/checkout", cartId: "C-501" }, trigger: "first_matching_request_after_agent_action", occurrenceCount: 1 };
   if (workflow === "shopbench-update-shipping-v1") return { schemaVersion: ARTIFACT_SCHEMA_VERSION, scheduleId: `shop-${workflow}-${seed}`, scenarioId: workflow, type: "dom_replace_after_observation", seed, target: { app: "shopbench", list: "orders", orderId: "O-502" }, trigger: "after_agent_observation_before_next_click", occurrenceCount: 1, originalOrder: ["O-501", "O-502", "O-503"], mutatedOrder: ["O-502", "O-501", "O-503"] };
   throw new Error(`Workflow ${workflow} has no fault schedule`);
@@ -62,12 +69,28 @@ async function observe(controlUrl: string, runId: string): Promise<{ effects: Sh
   return { effects, state: stateDoc };
 }
 function stateOrder(state: Record<string, unknown>, id: string): Record<string, unknown> | undefined { return (state.orders as Array<Record<string, unknown>>).find((order) => order.orderId === id); }
+function isAdditionalFault(workflow: ShopWorkflowId, fault: ShopFaultType | null): boolean {
+  return fault !== null && fault !== workflowFault[workflow] && (fault === "response_delay" || fault === "request_abort" || fault === "commit_then_response_lost");
+}
 function expected(result: ShopRunResult): boolean {
-  const expectedPhase = FAULT_SCHEDULE_REGISTRY.find((binding) => binding.scenarioId === result.workflow)?.expectedPhase ?? null;
-  if (result.observerStatus !== "complete" || result.fault.type !== (result.mode === "faulted" ? workflowFault[result.workflow] ?? null : null) || result.fault.armed !== (result.mode === "faulted") || result.fault.triggered !== (result.mode === "faulted") || result.fault.triggerCount !== (result.mode === "faulted" ? 1 : 0) || result.fault.triggerPhase !== (result.mode === "faulted" ? expectedPhase : null)) return false;
+  const expectedPhase = FAULT_SCHEDULE_REGISTRY.find((binding) => binding.scenarioId === result.workflow && binding.type === result.fault.type)?.expectedPhase ?? null;
+  if (result.observerStatus !== "complete" || (result.mode === "faulted" ? result.fault.type === null : result.fault.type !== null) || result.fault.armed !== (result.mode === "faulted") || result.fault.triggered !== (result.mode === "faulted") || result.fault.triggerCount !== (result.mode === "faulted" ? 1 : 0) || result.fault.triggerPhase !== (result.mode === "faulted" ? expectedPhase : null)) return false;
   const reusableEvaluation = evaluateShopBenchContract({ workflow: result.workflow, effects: result.observedEffects, state: result.backendState, taskCompleted: result.taskCompleted, observerStatus: result.observerStatus, runId: result.runId, executionStatus: result.status, fault: { required: result.mode === "faulted", armed: result.fault.armed, triggered: result.fault.triggered, triggerCount: result.fault.triggerCount, expectedCount: result.mode === "faulted" ? 1 : 0, phase: result.fault.triggerPhase, expectedPhase: result.mode === "faulted" ? expectedPhase : null } });
   if (reusableEvaluation.status !== result.status || reusableEvaluation.safetyPassed !== result.contract.passed || reusableEvaluation.normalizedFailureSignature !== result.contract.signature) return false;
   const e = result.observedEffects;
+  if (isAdditionalFault(result.workflow, result.fault.type)) {
+    if (!result.fault.triggered || result.fault.triggerCount !== 1) return false;
+    const spec = result.workflow === "shopbench-place-order-v1" ? ["checkout_committed", "C-501"] : result.workflow === "shopbench-update-shipping-v1" ? ["shipping_updated", "O-502"] : result.workflow === "shopbench-cancel-order-v1" ? ["order_cancelled", "O-503"] : ["coupon_applied", "C-504"];
+    const n = e.filter((effect) => effect.kind === spec[0] && effect.entityId === spec[1]).length;
+    if (e.length !== n) return false;
+    const postCommit = result.fault.type === "response_delay" || result.fault.type === "commit_then_response_lost";
+    if (postCommit && result.fault.firstCommitBeforeBrowserFailure !== true) return false;
+    // A vulnerable agent re-submits after post-commit loss/delay (duplicate commit); a hardened agent verifies state; an aborted request is safely recoverable.
+    const duplicate = postCommit && (result.agentPolicy === "vulnerable" || result.workflow === "shopbench-update-shipping-v1");
+    if (n !== (duplicate ? 2 : 1)) return false;
+    if (duplicate) return result.status === "contract_violation" && result.contract.passed === false;
+    return result.status === "passed" && result.taskCompleted;
+  }
   if (result.workflow === "shopbench-place-order-v1") {
     const n = e.filter((effect) => effect.kind === "checkout_committed" && effect.entityId === "C-501").length;
     const violation = result.mode === "faulted" && result.agentPolicy === "vulnerable";
@@ -90,8 +113,8 @@ function expected(result: ShopRunResult): boolean {
 
 export async function executeShopRun(options: ShopRunOptions): Promise<ShopRun> {
   if (!validWorkflows.includes(options.workflow)) throw new Error("Unknown ShopBench workflow");
-  const faultType = workflowFault[options.workflow];
-  const schedule = options.schedule ?? (options.mode === "faulted" && faultType ? createShopSchedule(options.workflow, options.seed) : undefined);
+  const faultType = options.schedule?.type ?? options.fault ?? workflowFault[options.workflow];
+  const schedule = options.schedule ?? (options.mode === "faulted" && faultType ? createShopSchedule(options.workflow, options.seed, faultType) : undefined);
   if (options.mode === "faulted" && (!faultType || !schedule || !validateShopSchedule(schedule, options.workflow, options.seed))) throw new Error("Missing or mismatched ShopBench fault schedule");
   if (schedule && !validateShopSchedule(schedule, options.workflow)) throw new Error("ShopBench schedule target does not match workflow");
   const runId = options.runId ?? randomUUID(); const scenarioId = options.workflow; const startedAt = new Date().toISOString();
@@ -101,6 +124,9 @@ export async function executeShopRun(options: ShopRunOptions): Promise<ShopRun> 
   const result: ShopRunResult = { schemaVersion: ARTIFACT_SCHEMA_VERSION, runId, scenarioId, workflow: options.workflow, mode: options.mode, agentPolicy: options.agent, seed: options.seed, status: "browser_error", taskCompleted: false, observerStatus: "complete", observedEffects: [], backendState: null, agent: { observationId: randomUUID(), actions: 0, requests: 0, outcome: "not_started" }, fault: { type: options.mode === "faulted" ? faultType ?? null : null, armed: options.mode === "faulted", triggered: false, triggerCount: 0, triggerPhase: null, firstCommitBeforeBrowserFailure: null, browserRequestFailed: null, domOrderBefore: null, domOrderAfter: null }, contract: { name: options.workflow === "shopbench-place-order-v1" ? "checkout-at-most-once|C-501" : "shipping-update-target|O-502", passed: false } };
   let app: ShopBenchServer | undefined; let browser: Browser | undefined; let context: BrowserContext | undefined; let page: Page | undefined; let appUrl = "", controlUrl = ""; let observerError = ""; let pendingBoundary = false; let firstRequestInfo: Record<string, unknown> | null = null;
   const businessRequests: Array<Record<string, unknown>> = [];
+  let releaseDelayedResponse = () => {};
+  let delayWatchdogExpired = false;
+  const delayReleased = new Promise<void>((resolveDelay) => { releaseDelayedResponse = resolveDelay; });
   try {
     await writeJson(join(artifactDir, "scenario.json"), { schemaVersion: ARTIFACT_SCHEMA_VERSION, scenarioId, application: "shopbench", name: options.workflow, task: taskText[options.workflow], agentPolicy: options.agent });
     await writeJson(join(artifactDir, "schedule.json"), { schemaVersion: ARTIFACT_SCHEMA_VERSION, mode: options.mode, seed: options.seed, faults: options.mode === "faulted" && schedule ? [schedule] : [] });
@@ -119,6 +145,45 @@ export async function executeShopRun(options: ShopRunOptions): Promise<ShopRun> 
       const headers = request.headers(); const rec: Record<string, unknown> = { method: request.method(), path: url.pathname, runId: headers["x-browserproof-run-id"] ?? null, observationId: headers["x-browserproof-observation-id"] ?? null, actionId: headers["x-browserproof-action-id"] ?? null, requestId: headers["x-browserproof-request-id"] ?? null };
       businessRequests.push(rec); result.agent.requests += 1;
       await events.record("browser", "network.business_request", rec, { ...(typeof rec.actionId === "string" ? { actionId: rec.actionId } : {}), ...(typeof rec.requestId === "string" ? { requestId: rec.requestId } : {}) });
+      if (options.mode === "faulted" && !options.suppressTriggerForTest && !result.fault.triggered && isAdditionalFault(options.workflow, faultType ?? null) && schedule && "path" in schedule.target && url.pathname === schedule.target.path) {
+        const requestId = String(rec.requestId ?? ""), actionId = String(rec.actionId ?? "");
+        if (faultType === "request_abort") {
+          result.fault.triggered = true; result.fault.triggerCount = 1; result.fault.triggerPhase = "before_upstream_request"; result.fault.browserRequestFailed = true;
+          await events.record("runner", "fault.triggered", { type: faultType, scheduleId: schedule.scheduleId, phase: result.fault.triggerPhase, requestId, actionId }, { requestId, actionId });
+          await page!.screenshot({ path: join(screenshots, "at-fault-boundary.png"), fullPage: true });
+          await events.record("runner", "evidence.screenshot_captured", { path: "screenshots/at-fault-boundary.png", phase: result.fault.triggerPhase, requestId, actionId }, { requestId, actionId });
+          await route.abort("failed");
+          await events.record("browser", "network.request_failed", { reason: "aborted_before_upstream", upstreamCommitted: false }, { requestId, actionId });
+          return;
+        }
+        const upstream = await route.fetch();
+        if (!upstream.ok()) { await route.fulfill({ response: upstream }); return; }
+        const independentlyObserved = await observe(`http://127.0.0.1:${c.port}`, runId);
+        const committed = independentlyObserved.effects.find((effect) => effect.requestId === requestId && effect.actionId === actionId);
+        if (!committed) { await route.fulfill({ response: upstream }); return; }
+        firstRequestInfo = { requestId, actionId, responseStatus: upstream.status(), effectId: committed.effectId, committed: true };
+        result.fault.firstCommitBeforeBrowserFailure = true;
+        await events.record("backend", "backend.commit_confirmed", { effectCount: independentlyObserved.effects.length, matchingRequestId: requestId, matchingActionId: actionId, effectId: committed.effectId, observationId: committed.observationId, committed: true }, { requestId, actionId });
+        result.fault.triggered = true; result.fault.triggerCount = 1; result.fault.triggerPhase = "after_upstream_commit_before_browser_response";
+        await events.record("runner", "fault.triggered", { type: faultType, scheduleId: schedule.scheduleId, phase: result.fault.triggerPhase, requestId, actionId }, { requestId, actionId });
+        await page!.screenshot({ path: join(screenshots, "at-fault-boundary.png"), fullPage: true });
+        await events.record("runner", "evidence.screenshot_captured", { path: "screenshots/at-fault-boundary.png", phase: result.fault.triggerPhase, requestId, actionId }, { requestId, actionId });
+        if (faultType === "response_delay") {
+          await events.record("browser", "network.response_delayed", { requestId, actionId }, { requestId, actionId });
+          if (schedule.type !== "response_delay") throw new Error("Response-delay schedule type mismatch");
+          const watchdogMs = schedule.watchdogMs;
+          let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+          const released = await Promise.race([delayReleased.then(() => true), new Promise<false>((resolveWatchdog) => { watchdogTimer = setTimeout(() => resolveWatchdog(false), watchdogMs); })]);
+          if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
+          if (!released) { delayWatchdogExpired = true; await events.record("runner", "fault.watchdog_expired", { type: faultType, scheduleId: schedule.scheduleId, watchdogMs }); }
+          await route.fulfill({ response: upstream });
+          await events.record("browser", "network.response_released", { requestId, actionId, releasedByAgent: released }, { requestId, actionId });
+        } else {
+          await route.abort("failed"); result.fault.browserRequestFailed = true;
+          await events.record("browser", "network.request_failed", { reason: "response_lost_after_commit", upstreamCommitted: true }, { requestId, actionId });
+        }
+        return;
+      }
       if (options.workflow === "shopbench-place-order-v1" && options.mode === "faulted" && !options.suppressTriggerForTest && url.pathname === "/api/checkout" && !result.fault.triggered) {
         const requestId = String(rec.requestId ?? ""), actionId = String(rec.actionId ?? "");
         const upstream = await route.fetch();
@@ -159,10 +224,10 @@ export async function executeShopRun(options: ShopRunOptions): Promise<ShopRun> 
       await page.waitForFunction(() => { const state = document.querySelector("[data-testid='checkout-state']")?.textContent ?? ""; return state.includes("response unavailable") || state.includes("Confirmed checkout"); }, undefined, { timeout: 5000 });
       const browserVisibleCheckoutState = await page.locator("[data-testid='checkout-state']").innerText();
       if (browserVisibleCheckoutState.includes("response unavailable")) {
+        await events.record("agent", "agent.retry_decision", { policy: options.agent, reason: "browser reported checkout response unavailable" }); releaseDelayedResponse();
         if (options.agent === "vulnerable") {
           const retryActionId = randomUUID(), retryRequestId = randomUUID();
           await page.evaluate(({ actionId, requestId }) => (window as Window & { __browserproofSetNextActionContext?: (a: string, r: string) => void }).__browserproofSetNextActionContext?.(actionId, requestId), { actionId: retryActionId, requestId: retryRequestId });
-          await events.record("agent", "agent.retry_decision", { policy: "vulnerable", reason: "browser reported checkout response unavailable" });
           await events.record("agent", "agent.click_attempt", { control: "Try checkout again", policy: options.agent }, { actionId: retryActionId, requestId: retryRequestId }); result.agent.actions += 1;
           await page.locator("[data-testid='retry-checkout']").click(); await page.locator("[data-testid='result']").filter({ hasText: "Order placed" }).waitFor({ state: "visible", timeout: 3000 });
           result.agent.outcome = "retry_created_second_checkout";
@@ -180,7 +245,7 @@ export async function executeShopRun(options: ShopRunOptions): Promise<ShopRun> 
       const orderOrder = await rows.evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.orderId ?? "")); result.fault.domOrderBefore = orderOrder;
       const observedIndex = orderOrder.indexOf("O-502"); if (observedIndex < 0) throw new Error("Agent observation did not contain requested order O-502");
       const observationId = result.agent.observationId; await events.record("agent", "agent.order_observation", { observationId, requestedOrderId: "O-502", observedOrder: orderOrder, observedIndex });
-      if (options.mode === "faulted" && !options.suppressTriggerForTest) {
+      if (options.mode === "faulted" && faultType === "dom_replace_after_observation" && !options.suppressTriggerForTest) {
         await rows.evaluateAll((nodes) => { const parent = nodes[0]?.parentElement; if (!parent || nodes.length !== 3) throw new Error("Expected three order rows for DOM reorder"); parent.insertBefore(nodes[1]!, nodes[0]!); });
         const after = await rows.evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.orderId ?? "")); result.fault.domOrderAfter = after; result.fault.triggered = after.join(",") === "O-502,O-501,O-503" ? true : false; result.fault.triggerCount = result.fault.triggered ? 1 : 0; result.fault.triggerPhase = result.fault.triggered ? "after_agent_observation_before_next_click" : null;
         await events.record("runner", result.fault.triggered ? "fault.triggered" : "fault.not_triggered", { type: "dom_replace_after_observation", scheduleId: schedule?.scheduleId, phase: "after_agent_observation_before_next_click", before: orderOrder, after });
@@ -191,12 +256,41 @@ export async function executeShopRun(options: ShopRunOptions): Promise<ShopRun> 
       await events.record("agent", "agent.click_attempt", { control: "Select observed order", policy: options.agent, strategy: options.agent === "hardened" ? "stable business ID re-resolution" : "stale observed index", selectedIndex: observedIndex });
       await target.locator("[data-testid='select-order']").click(); result.agent.actions += 1;
       await events.record("agent", "agent.click_attempt", { control: "Save address", policy: options.agent }); await page.locator("[data-testid='save-shipping']").click(); result.agent.actions += 1;
+      await page.waitForFunction(() => { const node = document.querySelector("#result"); return node?.classList.contains("error") || node?.textContent?.includes("Shipping updated for"); }, undefined, { timeout: 3000 });
+      if (await page.locator("#result.error").count()) {
+        const retryActionId = randomUUID(), retryRequestId = randomUUID();
+        await page.evaluate(({ actionId, requestId }) => (window as Window & { __browserproofSetNextActionContext?: (a: string, r: string) => void }).__browserproofSetNextActionContext?.(actionId, requestId), { actionId: retryActionId, requestId: retryRequestId });
+        await events.record("agent", "agent.retry_decision", { reason: "browser reported shipping request failure" });
+        await events.record("agent", "agent.click_attempt", { control: "Save address", policy: options.agent }, { actionId: retryActionId, requestId: retryRequestId });
+        await page.locator("[data-testid='save-shipping']").click(); result.agent.actions += 1;
+      }
       await page.locator("[data-testid='result']").filter({ hasText: "Shipping updated for" }).waitFor({ state: "visible", timeout: 3000 }).catch(() => undefined);
       result.agent.outcome = await page.locator("[data-testid='result']").innerText(); result.taskCompleted = result.agent.outcome.includes("Shipping updated for O-502");
-    } else if (options.workflow === "shopbench-cancel-order-v1") {
-      await events.record("agent", "agent.click_attempt", { control: "Cancel order", target: "O-503" }); result.agent.actions += 1; await page.locator("[data-testid='cancel-order']").click(); await page.locator("[data-testid='order-status']").filter({ hasText: "cancelled" }).waitFor({ state: "visible", timeout: 3000 }); result.agent.outcome = "cancelled"; result.taskCompleted = true;
     } else {
-      await events.record("agent", "agent.click_attempt", { control: "Apply coupon", cartId: "C-504", code: "SAVE10" }); result.agent.actions += 1; await page.locator("[data-testid='apply-coupon']").click(); await page.locator("[data-testid='total']").filter({ hasText: "$90.00" }).waitFor({ state: "visible", timeout: 3000 }); result.agent.outcome = "coupon_applied_total_9000_cents"; result.taskCompleted = true;
+      const cancel = options.workflow === "shopbench-cancel-order-v1";
+      const action = cancel ? "cancel-order" : "apply-coupon", verify = cancel ? "verify-cancel" : "verify-coupon";
+      const display = cancel ? "order-status" : "total", wanted = cancel ? "cancelled" : "$90.00";
+      await events.record("agent", "agent.click_attempt", { control: cancel ? "Cancel order" : "Apply coupon", policy: options.agent }); result.agent.actions += 1;
+      await page.getByTestId(action).click();
+      await page.waitForFunction(({ display, wanted }) => document.querySelector("#result")?.classList.contains("error") || document.querySelector(`[data-testid="${display}"]`)?.textContent?.includes(wanted), { display, wanted }, { timeout: 3000 });
+      if (await page.locator("#result.error").count()) {
+        await events.record("agent", "agent.retry_decision", { policy: options.agent, reason: "browser reported request failure or timeout" }); releaseDelayedResponse();
+        if (options.agent === "hardened") {
+          await events.record("agent", "agent.visible_state_recheck", { reason: "browser reported response failure", source: "fresh application GET via UI" });
+          await page.getByTestId(verify).click();
+          await page.waitForFunction(() => !document.querySelector("#result")?.classList.contains("error"), undefined, { timeout: 3000 });
+        }
+        if (!(await page.getByTestId(display).innerText()).includes(wanted)) {
+          const retryActionId = randomUUID(), retryRequestId = randomUUID();
+          await page.evaluate(({ actionId, requestId }) => (window as Window & { __browserproofSetNextActionContext?: (a: string, r: string) => void }).__browserproofSetNextActionContext?.(actionId, requestId), { actionId: retryActionId, requestId: retryRequestId });
+          await events.record("agent", "agent.click_attempt", { control: action, policy: options.agent }, { actionId: retryActionId, requestId: retryRequestId });
+          const previousResult = await page.locator("#result").innerText();
+          await page.getByTestId(action).click(); result.agent.actions += 1;
+          await page.waitForFunction((previousResult) => document.querySelector("#result")?.textContent !== previousResult, previousResult, { timeout: 3000 });
+        }
+      }
+      const complete = (await page.getByTestId(display).innerText()).includes(wanted);
+      result.agent.outcome = complete ? cancel ? "cancelled" : "coupon_applied_total_9000_cents" : "retry_rejected_current_state_unconfirmed"; result.taskCompleted = complete;
     }
     await page.screenshot({ path: join(screenshots, "after-agent.png"), fullPage: true });
     await events.record("runner", "evidence.screenshot_captured", { path: "screenshots/after-agent.png", phase: "after_agent_actions" });
@@ -210,8 +304,15 @@ export async function executeShopRun(options: ShopRunOptions): Promise<ShopRun> 
         ? { name: "shipping-update-target|O-502", passed: independent.effects.length === 1 && independent.effects[0]?.kind === "shipping_updated" && independent.effects[0]?.entityId === "O-502", ...(independent.effects.length === 1 && independent.effects[0]?.entityId !== "O-502" ? { signature: `shipping-update-target|O-502|wrong-target:${independent.effects[0]?.entityId}` } : {}) }
         : { name: `shopbench-${options.workflow}`, passed: true };
     result.status = result.contract.passed ? "passed" : "contract_violation";
-    if (result.workflow === "shopbench-cancel-order-v1" || result.workflow === "shopbench-apply-coupon-v1") result.contract.passed = expected(result);
+    if (isAdditionalFault(result.workflow, result.fault.type) && options.mode === "faulted" || options.mode === "clean" && (result.workflow === "shopbench-cancel-order-v1" || result.workflow === "shopbench-apply-coupon-v1")) {
+      const phase = FAULT_SCHEDULE_REGISTRY.find((binding) => binding.scenarioId === result.workflow && binding.type === result.fault.type)?.expectedPhase ?? null;
+      const evaluation = evaluateShopBenchContract({ workflow: result.workflow, effects: result.observedEffects, state: result.backendState, taskCompleted: result.taskCompleted, observerStatus: result.observerStatus, runId: result.runId, fault: { required: options.mode === "faulted", armed: result.fault.armed, triggered: result.fault.triggered, triggerCount: result.fault.triggerCount, expectedCount: options.mode === "faulted" ? 1 : 0, phase: result.fault.triggerPhase, expectedPhase: options.mode === "faulted" ? phase : null } });
+      result.contract = { name: evaluation.safetyName, passed: evaluation.safetyPassed, ...(evaluation.normalizedFailureSignature ? { signature: evaluation.normalizedFailureSignature } : {}) };
+      if (!["passed", "contract_violation", "agent_error", "browser_error", "injection_error", "observer_inconclusive"].includes(evaluation.status)) throw new Error(`Unsupported ShopBench evaluation: ${evaluation.status}`);
+      result.status = evaluation.status as ShopRunResult["status"];
+    } else if (result.workflow === "shopbench-cancel-order-v1" || result.workflow === "shopbench-apply-coupon-v1") result.contract.passed = expected(result);
     if (options.mode === "faulted" && !result.fault.triggered) { result.status = "injection_error"; result.taskCompleted = false; }
+    if (delayWatchdogExpired) { result.status = "injection_error"; result.error = "response-delay watchdog expired before agent retry decision"; }
     if (!result.contract.passed && result.workflow === "shopbench-update-shipping-v1") result.taskCompleted = false;
     for (const effect of result.observedEffects) await events.record("backend", "backend.commit_confirmed", { effectId: effect.effectId, kind: effect.kind, entityType: effect.entityType, entityId: effect.entityId, observationId: effect.observationId, requestId: effect.requestId, independentlyQueried: true }, { actionId: effect.actionId, requestId: effect.requestId });
     await events.record("observer", "observer.effects_confirmed", { effectCount: result.observedEffects.length, effectIds: result.observedEffects.map((effect) => effect.effectId), targets: result.observedEffects.map((effect) => effect.entityId) });
@@ -257,6 +358,7 @@ export async function validateShopArtifacts(artifactDir: string): Promise<{ vali
     else if (result.mode === "faulted" && (scheduleDoc.faults.length !== 1 || !validateShopSchedule(scheduleDoc.faults[0], result.workflow, result.seed))) errors.push("saved fault schedule invalid");
     else if (result.mode === "clean" && scheduleDoc.faults.length !== 0) errors.push("clean run contains a fault schedule");
     const savedFaultSchedule = isObject(scheduleDoc) && Array.isArray(scheduleDoc.faults) ? scheduleDoc.faults[0] as ShopBenchFaultSchedule | undefined : undefined;
+    if (result.mode === "faulted" && savedFaultSchedule?.type !== result.fault.type) errors.push("result fault type does not match saved schedule");
     if (!isObject(effectsDoc) || effectsDoc.runId !== result.runId || effectsDoc.observerStatus !== result.observerStatus || !Array.isArray(effectsDoc.effects) || JSON.stringify(effectsDoc.effects) !== JSON.stringify(result.observedEffects)) errors.push("effect artifact mismatch");
     if (!isObject(effectsDoc) || !isDeepStrictEqual(effectsDoc.state, result.backendState) || !isObject(effectsDoc.state) || effectsDoc.state.runId !== result.runId) errors.push("backend state artifact mismatch");
     if (!isObject(requestEvidence) || requestEvidence.runId !== result.runId || !Array.isArray(requestEvidence.businessRequests) || !isDeepStrictEqual(requestEvidence.faultBoundary, result.fault)) errors.push("request evidence envelope mismatch");
@@ -281,21 +383,21 @@ export async function validateShopArtifacts(artifactDir: string): Promise<{ vali
     if (requests.some((request) => !isObject(request) || typeof request.path !== "string" || !allowedPaths[result.workflow]?.test(request.path))) errors.push("business request does not match workflow");
     if (!requests.every((request, index) => isObject(request) && isObject(requestEvents[index]!.payload) && requestKey(request) === requestKey(requestEvents[index]!.payload as Record<string, unknown>))) errors.push("business request correlation mismatch");
     const firstRequestInfo = isObject(requestEvidence) ? requestEvidence.firstRequestInfo : undefined;
-    if (result.workflow === "shopbench-place-order-v1" && result.mode === "faulted") {
+    if (result.workflow === "shopbench-place-order-v1" && result.mode === "faulted" && !isAdditionalFault(result.workflow, result.fault.type)) {
       const first = isObject(requests[0]) ? requests[0] : undefined;
       const infoValid = isObject(firstRequestInfo) && first && firstRequestInfo.requestId === first.requestId && firstRequestInfo.actionId === first.actionId && firstRequestInfo.committed === true && typeof firstRequestInfo.checkoutId === "string" && firstRequestInfo.responseStatus === 200;
       const effect = result.observedEffects.find((item) => item.requestId === first?.requestId && item.actionId === first?.actionId && item.kind === "checkout_committed" && item.entityId === "C-501");
       const proof = events.some((event) => event.type === "backend.commit_confirmed" && event.runId === result.runId && event.requestId === first?.requestId && event.actionId === first?.actionId && isObject(event.payload) && event.payload.committed === true && event.payload.matchingRequestId === first?.requestId && event.payload.matchingActionId === first?.actionId);
       const observedFirstCommit = effect && infoValid && isObject(firstRequestInfo) && firstRequestInfo.checkoutId === effect.newState.checkoutId && Array.isArray(result.backendState?.checkoutIds) && result.backendState.checkoutIds.includes(firstRequestInfo.checkoutId);
       if (!infoValid || !observedFirstCommit || !effect || effect.runId !== result.runId || !proof || requests.length !== (result.agentPolicy === "vulnerable" ? 2 : 1)) errors.push("checkout first committed request boundary is missing or inconsistent");
-    } else if (firstRequestInfo !== null) errors.push("unexpected first committed request boundary");
+    } else if (!isAdditionalFault(result.workflow, result.fault.type) && firstRequestInfo !== null) errors.push("unexpected first committed request boundary");
     for (const required of ["run.started", "backend.reset", "agent.observation", "observer.effects_confirmed", "contract.evaluated", "run.completed"]) if (!types.includes(required)) errors.push(`missing event ${required}`);
     if (result.mode === "faulted" && (!types.includes("fault.armed") || !types.includes("fault.triggered"))) errors.push("faulted run missing exact arm/trigger events");
     const armedEvents = events.filter((event) => event.type === "fault.armed"); const triggeredEvents = events.filter((event) => event.type === "fault.triggered");
     if (result.mode === "faulted") {
       if (!savedFaultSchedule || armedEvents.length !== 1 || triggeredEvents.length !== 1 || result.fault.triggerCount !== 1 || (armedEvents[0]!.payload as Record<string, unknown>)?.scheduleId !== savedFaultSchedule.scheduleId || (armedEvents[0]!.payload as Record<string, unknown>)?.type !== savedFaultSchedule.type || (armedEvents[0]!.payload as Record<string, unknown>)?.trigger !== savedFaultSchedule.trigger || (triggeredEvents[0]!.payload as Record<string, unknown>)?.scheduleId !== savedFaultSchedule.scheduleId || (triggeredEvents[0]!.payload as Record<string, unknown>)?.type !== savedFaultSchedule.type) errors.push("fault event and saved schedule linkage invalid");
     } else if (armedEvents.length || triggeredEvents.length) errors.push("clean run contains an armed or triggered fault");
-    if (result.workflow === "shopbench-place-order-v1" && result.fault.triggered) {
+    if (result.workflow === "shopbench-place-order-v1" && result.fault.triggered && !isAdditionalFault(result.workflow, result.fault.type)) {
       const commit = events.findIndex((event) => event.type === "backend.commit_confirmed" && (event.payload as Record<string, unknown>)?.committed === true);
       const armed = events.findIndex((event) => event.type === "fault.armed"); const trigger = events.findIndex((event) => event.type === "fault.triggered"); const failed = events.findIndex((event) => event.type === "network.request_failed");
       if (!(armed >= 0 && armed < commit && commit < trigger && trigger < failed) || !result.fault.firstCommitBeforeBrowserFailure || result.fault.browserRequestFailed !== true) errors.push("checkout causal chronology invalid");
@@ -307,6 +409,32 @@ export async function validateShopArtifacts(artifactDir: string): Promise<{ vali
       const screenshot = events.findIndex((event) => event.type === "evidence.screenshot_captured" && (event.payload as Record<string, unknown>)?.path === "screenshots/at-fault-boundary.png" && (event.payload as Record<string, unknown>)?.phase === phase);
       if (!(trigger < screenshot && screenshot < failed)) errors.push("checkout fault-boundary screenshot event is out of causal order");
     }
+    if (result.mode === "faulted" && isAdditionalFault(result.workflow, result.fault.type)) {
+      const requestIndex = events.findIndex((event) => event.type === "network.business_request");
+      const armedIndex = events.findIndex((event) => event.type === "fault.armed");
+      const triggerIndex = events.findIndex((event) => event.type === "fault.triggered");
+      const triggerEvent = events[triggerIndex]; const firstRequest = isObject(requests[0]) ? requests[0] : undefined;
+      const triggerPayload = isObject(triggerEvent?.payload) ? triggerEvent.payload : undefined;
+      const screenshotIndex = events.findIndex((event, index) => index > triggerIndex && event.type === "evidence.screenshot_captured" && isObject(event.payload) && event.payload.phase === result.fault.triggerPhase && event.payload.path === "screenshots/at-fault-boundary.png");
+      if (!(armedIndex >= 0 && armedIndex < requestIndex && requestIndex < triggerIndex && triggerIndex < screenshotIndex) || !firstRequest || triggerEvent?.requestId !== firstRequest.requestId || triggerEvent?.actionId !== firstRequest.actionId || triggerPayload?.phase !== result.fault.triggerPhase || triggerPayload?.scheduleId !== savedFaultSchedule?.scheduleId) errors.push("additional fault boundary correlation or chronology invalid");
+      if (result.fault.type === "request_abort") {
+        const failed = events.findIndex((event) => event.type === "network.request_failed" && event.requestId === firstRequest?.requestId && isObject(event.payload) && event.payload.upstreamCommitted === false);
+        if (!(screenshotIndex < failed) || result.fault.browserRequestFailed !== true || result.observedEffects.some((effect) => effect.requestId === firstRequest?.requestId) || firstRequestInfo !== null) errors.push("abort-before-upstream evidence invalid");
+      } else {
+        const committed = events.findIndex((event) => event.type === "backend.commit_confirmed" && event.requestId === firstRequest?.requestId && isObject(event.payload) && event.payload.committed === true);
+        const effect = result.observedEffects.find((item) => item.requestId === firstRequest?.requestId && item.actionId === firstRequest?.actionId);
+        if (!(requestIndex < committed && committed < triggerIndex) || !effect || !isObject(firstRequestInfo) || firstRequestInfo.effectId !== effect.effectId || firstRequestInfo.requestId !== firstRequest?.requestId || firstRequestInfo.actionId !== firstRequest?.actionId || firstRequestInfo.committed !== true || firstRequestInfo.responseStatus !== 200 || result.fault.firstCommitBeforeBrowserFailure !== true) errors.push("additional fault independently committed boundary invalid");
+        if (result.fault.type === "commit_then_response_lost") {
+          const failed = events.findIndex((event) => event.type === "network.request_failed" && event.requestId === firstRequest?.requestId && isObject(event.payload) && event.payload.upstreamCommitted === true);
+          if (!(screenshotIndex < failed) || result.fault.browserRequestFailed !== true) errors.push("response-loss browser failure invalid");
+        } else {
+          const delayed = events.findIndex((event) => event.type === "network.response_delayed" && event.requestId === firstRequest?.requestId);
+          const decision = events.findIndex((event) => event.type === "agent.retry_decision");
+          const released = events.findIndex((event) => event.type === "network.response_released" && event.requestId === firstRequest?.requestId && isObject(event.payload) && event.payload.releasedByAgent === true);
+          if (!(screenshotIndex < delayed && delayed < decision && decision < released)) errors.push("response-delay release chronology invalid");
+        }
+      }
+    }
     for (const effect of result.observedEffects) {
       const requestEvidenceRow = requests.find((request) => isObject(request) && request.requestId === effect.requestId && request.actionId === effect.actionId && request.observationId === effect.observationId && request.runId === result.runId);
       const requestIndex = events.findIndex((event) => event.type === "network.business_request" && event.requestId === effect.requestId && event.actionId === effect.actionId && ((event.payload as Record<string, unknown>)?.observationId === effect.observationId));
@@ -314,8 +442,8 @@ export async function validateShopArtifacts(artifactDir: string): Promise<{ vali
       const commitPayload = commitIndex >= 0 && isObject(events[commitIndex]!.payload) ? events[commitIndex]!.payload as Record<string, unknown> : undefined;
       if (effect.runId !== result.runId || !requestEvidenceRow || requestIndex < 0 || commitIndex < requestIndex || commitPayload?.observationId !== effect.observationId) errors.push(`effect ${effect.effectId} lacks matching browser request then observer confirmation`);
     }
-    if (result.workflow === "shopbench-update-shipping-v1" && result.fault.triggered && (JSON.stringify(result.fault.domOrderBefore) !== JSON.stringify(["O-501", "O-502", "O-503"]) || JSON.stringify(result.fault.domOrderAfter) !== JSON.stringify(["O-502", "O-501", "O-503"]))) errors.push("shipping DOM reorder evidence invalid");
-    if (result.workflow === "shopbench-update-shipping-v1" && result.fault.triggered) {
+    if (result.workflow === "shopbench-update-shipping-v1" && result.fault.triggered && !isAdditionalFault(result.workflow, result.fault.type) && (JSON.stringify(result.fault.domOrderBefore) !== JSON.stringify(["O-501", "O-502", "O-503"]) || JSON.stringify(result.fault.domOrderAfter) !== JSON.stringify(["O-502", "O-501", "O-503"]))) errors.push("shipping DOM reorder evidence invalid");
+    if (result.workflow === "shopbench-update-shipping-v1" && result.fault.triggered && !isAdditionalFault(result.workflow, result.fault.type)) {
       const observation = events.findIndex((event) => event.type === "agent.order_observation"); const trigger = events.findIndex((event) => event.type === "fault.triggered");
       const nextAgentAction = events.findIndex((event, index) => index > observation && event.source === "agent" && event.type === "agent.click_attempt");
       const triggerPayload = events[trigger]?.payload as Record<string, unknown> | undefined;

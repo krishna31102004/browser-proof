@@ -43,3 +43,11 @@ BrowserProof tests **browser agents** through controlled browser/network faults 
 - After pushing, verify remote `main` equals local `HEAD` and report the full commit SHA, branch, remote URL, verification commands, and test results.
 - Only the main agent edits Git configuration, commits, and pushes. Subagents never push or concurrently edit `AGENTS.md`, the root lockfile, or the execution log.
 - Stop if authentication requires user interaction. Do not ask for credentials in chat or record tokens.
+
+## Git Authorship and Attribution
+
+- Krishna Balaji (GitHub: `krishna31102004`) is the sole author and committer for all new repository commits.
+- Use the account-linked email `145410244+krishna31102004@users.noreply.github.com` for both author and committer (repository-local config; never change global Git config).
+- Never add `Co-authored-by` (or similar) trailers naming Claude, Codex, ChatGPT, Anthropic, or any AI agent, and no AI tool credits in commit messages. Never let automated commit generation override the owner's identity.
+- Before pushing, verify author, committer and the full message with `git log -1 --format=fuller`; fix an unpushed commit if wrong.
+- Do not rewrite existing Git history to enforce this retroactively.
