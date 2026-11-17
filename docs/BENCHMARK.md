@@ -36,7 +36,7 @@ Every post-commit fault (`commit_then_response_lost`, `response_delay`) refuses 
 
 ## Result of the recorded run
 
-See `benchmarks/results.v1.json` (`metrics`). 36/36 cases attempted and valid; clean 12/12 passed (0 false positives); seeded detected 24/24 (valid-case rate 24/24 = 100%, coverage 24/24 = 100%); 0 missed; 0 infrastructure, observer or injection failures; reproduction 24/24.
+See `benchmarks/results.v1.json` (`metrics`), recorded on a clean tree at `gitCommit` `24c1323b1462f8d82287f4bf1d20276e3e967baf` (`workingTreeDirty: false`; artifact paths are repo-relative). 36/36 cases attempted and valid; clean 12/12 passed (0 false positives); seeded detected 24/24 (valid-case rate 24/24 = 100%, coverage 24/24 = 100%); 0 missed; 0 infrastructure, observer or injection failures; reproduction 24/24.
 
 ## How to read the 100% (limitations: read before quoting it)
 
